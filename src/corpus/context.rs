@@ -218,7 +218,9 @@ mod tests {
     #[test]
     fn id_and_collection() {
         assert_eq!(ContextCorpus.id(), "context");
-        assert!(ContextCorpus.collection(Path::new(".")).starts_with("context-"));
+        assert!(ContextCorpus
+            .collection(Path::new("."))
+            .starts_with("context-"));
     }
 
     #[test]
@@ -237,14 +239,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         make_context_dir(
             dir.path(),
-            &[
-                ("direction.md", "# Direction"),
-                ("roadmap.md", "# Roadmap"),
-            ],
+            &[("direction.md", "# Direction"), ("roadmap.md", "# Roadmap")],
         );
         let records = ContextCorpus.enumerate(dir.path()).unwrap();
         let by = by_path(records);
-        assert_eq!(by[".cspace/context/direction.md"].extra["subkind"], "direction");
+        assert_eq!(
+            by[".cspace/context/direction.md"].extra["subkind"],
+            "direction"
+        );
         assert_eq!(by[".cspace/context/roadmap.md"].extra["subkind"], "roadmap");
     }
 }
