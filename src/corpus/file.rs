@@ -179,7 +179,6 @@ impl Corpus for FileCorpus {
                     continue;
                 }
             };
-            let hash = hex::encode(Sha256::digest(&data));
             let chunk_cfg = group
                 .chunk
                 .or(self.chunk)
@@ -233,12 +232,21 @@ impl Corpus for FileCorpus {
                 let body = body.trim_end_matches('\0');
                 let embed_text = format!("{header}{body}");
 
+                // Content hash is over the *final* embed_text, not the
+                // source bytes. This lets the indexer's skip cache
+                // detect changes to the header template, record_kind,
+                // or any path-group `extra` value — all of which alter
+                // the embedding input without changing the underlying
+                // file. A file-level change still invalidates every
+                // affected chunk since each chunk's body slice differs.
+                let content_hash = hex::encode(Sha256::digest(embed_text.as_bytes()));
+
                 out.push(Record {
                     path: rel.clone(),
                     line_start: ch.line_start,
                     line_end: ch.line_end,
                     kind: kind.to_string(),
-                    content_hash: hash.clone(),
+                    content_hash,
                     extra: extra_values,
                     embed_text,
                 });
@@ -564,6 +572,66 @@ mod tests {
             render_template("Context ({subkind}): {path}\n\n", &vars),
             "Context (direction): a.rs\n\n"
         );
+    }
+
+    /// Header-template changes must invalidate the content_hash skip
+    /// cache. Pre-refactor the hash was sha256(file_bytes), so a
+    /// header change silently kept stale vectors in the store. Post
+    /// refactor the hash is sha256(embed_text) — the exact string
+    /// fed to the embedder — so any template change flips the hash.
+    #[test]
+    fn content_hash_covers_header_template() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = dir.path().join(".cspace/context");
+        fs::create_dir_all(&ctx).unwrap();
+        fs::write(ctx.join("principles.md"), "keep it simple").unwrap();
+
+        let mut cfg = context_config();
+        cfg.embed_header = Some("First: {path}\n\n".into());
+        let hash1 = FileCorpus::from_config("context", &cfg)
+            .unwrap()
+            .enumerate(dir.path())
+            .unwrap()[0]
+            .content_hash
+            .clone();
+
+        cfg.embed_header = Some("Second: {path}\n\n".into());
+        let hash2 = FileCorpus::from_config("context", &cfg)
+            .unwrap()
+            .enumerate(dir.path())
+            .unwrap()[0]
+            .content_hash
+            .clone();
+
+        assert_ne!(hash1, hash2, "header change must invalidate content_hash");
+    }
+
+    /// Conversely: with the same config, two chunks of the same file
+    /// must produce stable hashes across runs. This is the property
+    /// the indexer's skip cache actually relies on.
+    #[test]
+    fn content_hash_stable_across_runs_with_same_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = dir.path().join(".cspace/context");
+        fs::create_dir_all(&ctx).unwrap();
+        fs::write(ctx.join("principles.md"), "keep it simple").unwrap();
+
+        let cfg = context_config();
+        let first: Vec<String> = FileCorpus::from_config("context", &cfg)
+            .unwrap()
+            .enumerate(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|r| r.content_hash)
+            .collect();
+        let second: Vec<String> = FileCorpus::from_config("context", &cfg)
+            .unwrap()
+            .enumerate(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|r| r.content_hash)
+            .collect();
+        assert_eq!(first, second);
     }
 
     #[test]

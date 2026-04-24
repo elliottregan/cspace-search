@@ -45,12 +45,17 @@ Revisit this decision only if one of these signals fires:
 2. **Concurrency story becomes a bottleneck.** Specifically, if we add autonomous-agent re-indexing that needs to interleave with live MCP queries, sqlite-vec's single-writer model will show.
 3. **Payload-filter complexity grows.** `path_filter` / `kind_filter` in Phase 6 are fine on sqlite-vec. If Phase 7+ adds multi-field filters, numeric range predicates, or faceted search, the manual-JSON1 approach gets painful.
 
-## Follow-up work
+## Re-evaluation path
 
-- **Phase 6 → Phase 7 hand-off**: write a micro-benchmark that seeds N random 768-d vectors, runs K queries, reports p50/p95/p99 query latency at N ∈ {1k, 10k, 50k, 100k}. ~30 minutes of work. Capture numbers in `.cspace/context/findings/` as a baseline.
-- **If/when the micro-benchmark or production shows the signals above**: spike LanceDB as a drop-in `Upserter` + `Searcher` implementation. Phase 3's trait split makes this a bounded piece of work — just a second impl in `src/index/lancedb.rs`, a runtime pick, done. No surface-level changes upstream.
+No scheduled work. If a trigger condition above fires in real use, spike
+LanceDB as a drop-in alternative `Upserter` + `Searcher` implementation.
+The Phase 3 trait split makes this bounded: a second impl in
+`src/index/lancedb.rs`, a runtime pick based on config, done. No
+surface-level changes upstream.
 
 ## What we are NOT doing
 
 - **Not** adopting qdrant in any form. Distribution model is wrong. Settled.
-- **Not** running the micro-benchmark now. Premature — we don't have real corpora indexed to seed it with. Defer until after Phase 6 lands and we have MCP-driven usage to observe.
+- **Not** pre-benchmarking against synthetic corpora. The decision is
+  grounded in distribution constraints; benchmarks would inform a
+  re-evaluation, not the current call.
