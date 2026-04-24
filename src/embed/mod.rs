@@ -1,13 +1,13 @@
 //! Embedder: turn text into unit-normalized vectors for the indexer.
 //!
-//! Ports the Go `index.Embedder` interface. Phase 4a (this commit)
-//! lands the trait + a deterministic `FakeEmbedder` so the indexer
-//! loop (Phase 5) can be written and tested without a real model.
-//! Phase 4b will add the real candle-backed implementation once the
-//! model decision (v2-via-candle-native vs v5-via-llama-cpp-2 vs
-//! port-v5-to-candle) lands.
+//! Ports the Go `index.Embedder` interface. Provides:
+//! - [`FakeEmbedder`] — deterministic sha256-seeded vectors for tests.
+//! - [`llama::LlamaEmbedder`] — GGUF-backed inference via llama.cpp,
+//!   default target is Jina v5 nano retrieval.
 
 #![allow(dead_code)]
+
+pub mod llama;
 
 use sha2::{Digest, Sha256};
 

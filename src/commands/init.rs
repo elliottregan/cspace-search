@@ -1,16 +1,17 @@
 use crate::config;
-use crate::embed::FakeEmbedder;
+use crate::embed::llama::{LlamaEmbedder, DEFAULT_DIM};
+use crate::embed::{Embedder, FakeEmbedder};
 use crate::index::{self, sqlite::SqliteUpserter, RunConfig};
 use clap::Parser;
 use std::path::PathBuf;
 
 /// Build or refresh the search index for the current project.
 ///
-/// Currently wires the indexer against the fake embedder; the real
-/// Jina v5 embedder lands once the ONNX runtime pick stabilizes (see
-/// PORTING.md Phase 4b). The pipeline shape — enumerate → hash-skip →
-/// embed → upsert → evict orphans — matches the Go version so swapping
-/// the embedder later is a one-line change here.
+/// Uses the llama.cpp-backed Jina v5 nano retrieval embedder by
+/// default; pass `--fake-embedder` to substitute a deterministic
+/// sha-seeded fake (small, no model download, useful for CI and for
+/// exercising the pipeline without inference cost). The model +
+/// tokenizer download to `~/.cache/huggingface/hub/` on first use.
 #[derive(Parser, Debug)]
 pub struct Args {
     /// Project root. Defaults to the nearest ancestor directory with a `.git/`.
@@ -26,11 +27,17 @@ pub struct Args {
     #[arg(long)]
     pub quiet: bool,
 
-    /// Embedding dimensionality. Must match the real embedder dim
-    /// once Phase 4b lands (Jina v5 nano is 768); kept as a flag for
-    /// the interim fake-embedder path so tests and ad-hoc runs can
-    /// exercise small dims without stomping a 768-dim store.
-    #[arg(long, default_value_t = 768)]
+    /// Use the deterministic FakeEmbedder instead of loading the
+    /// real Jina v5 model. Produces unit vectors keyed by sha256 of
+    /// the input text — fine for exercising the pipeline, useless
+    /// for semantic search. `--dim` applies only in fake mode.
+    #[arg(long)]
+    pub fake_embedder: bool,
+
+    /// Embedding dimensionality. Ignored unless `--fake-embedder` is
+    /// set; the real embedder always reports its own native dim
+    /// (768 for Jina v5 nano).
+    #[arg(long, default_value_t = DEFAULT_DIM)]
     pub dim: usize,
 }
 
@@ -55,7 +62,13 @@ pub fn run(args: Args) -> anyhow::Result<()> {
 
     let db_path = index_db_path(&root)?;
     let upserter = SqliteUpserter::open(&db_path)?;
-    let embedder = FakeEmbedder::new(args.dim);
+    // Boxed to a trait object so both embedders share a codepath below.
+    let embedder: Box<dyn Embedder> = if args.fake_embedder {
+        Box::new(FakeEmbedder::new(args.dim))
+    } else {
+        eprintln!("Loading Jina v5 nano retrieval (first use downloads ~80MB)...");
+        Box::new(LlamaEmbedder::jina_v5_nano_retrieval()?)
+    };
 
     for id in &corpora {
         // Build the corpus via the runtime gate so a disabled corpus
@@ -79,7 +92,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         };
         let stats = index::run(RunConfig {
             corpus: runtime.corpus.as_ref(),
-            embedder: &embedder,
+            embedder: embedder.as_ref(),
             upserter: &upserter,
             project_root: &root,
             batch_size: 0,
@@ -92,11 +105,13 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         );
     }
 
-    eprintln!();
-    eprintln!(
-        "note: running with FakeEmbedder; vectors are deterministic but not semantic. \
-         Phase 4b swaps in Jina v5."
-    );
+    if args.fake_embedder {
+        eprintln!();
+        eprintln!(
+            "note: --fake-embedder in use; vectors are deterministic but not semantic. \
+             Drop the flag to index with Jina v5."
+        );
+    }
     Ok(())
 }
 

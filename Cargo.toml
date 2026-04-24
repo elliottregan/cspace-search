@@ -48,16 +48,13 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 sqlite-vec = "0.1"
 zerocopy = "0.7"
 
-# Added in later phases:
-# candle-core       — model runtime (Phase: embed)
-# candle-nn         — layers
-# candle-transformers — Jina v5 arch
-# rusqlite          — sqlite-vec host (Phase: index)
-# sqlite-vec        — vector extension
-# rmcp              — MCP server (Phase: mcp)
-# git2              — libgit2 for commit walking (Phase: corpus/commits)
-# ignore            — .gitignore-aware file walker (Phase: corpus/code)
-# ureq or reqwest   — HTTP client for reduce-api, if we keep it
+# Embedding inference via llama.cpp. Reads GGUF natively — same file
+# the Go version used (`v5-nano-retrieval-Q8_0.gguf` from HF). CGO-ish
+# build (llama-cpp-sys-2 vendors + builds the llama.cpp C++ source),
+# but vendored means no external CDN and no runtime dylib. hf-hub
+# lazily downloads + caches the GGUF on first use.
+llama-cpp-2 = "0.1"
+hf-hub = { version = "0.5", default-features = false, features = ["ureq"] }
 
 [dev-dependencies]
 tempfile = "3"
