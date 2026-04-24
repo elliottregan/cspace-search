@@ -8,6 +8,7 @@
 use clap::{Parser, Subcommand};
 
 mod commands;
+mod config;
 
 /// cspace-search: local-first semantic search for commits, code, and context.
 #[derive(Parser, Debug)]

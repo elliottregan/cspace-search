@@ -1,0 +1,58 @@
+# Default corpus configuration for cspace-search.
+# Projects override by placing a search.yaml at the project root.
+#
+# Master switch: search is off by default. Projects opt in by setting
+# `enabled: true` in their own search.yaml. Without that, every search
+# CLI + MCP + bootstrap path fast-exits without touching qdrant or llama.
+# Prevents newly-cloned cspace projects from auto-indexing node_modules
+# on first container boot.
+enabled: false
+corpora:
+  code:
+    enabled: true
+    max_bytes: 204800
+    excludes:
+      - "vendor/**"
+      - "internal/assets/embedded/**"
+      # All prose/docs deferred to a future docs corpus. Keeps the code
+      # corpus focused on actual source: Go, shell, YAML, and the in-tree
+      # skill/command/agent .md files under lib/.
+      - "docs/**"
+      - "*.lock"
+      - "*.sum"
+      - "package-lock.json"
+      - "pnpm-lock.yaml"
+      - "yarn.lock"
+      - "go.sum"
+      - "*.png"
+      - "*.jpg"
+      - "*.gif"
+      - "*.ico"
+      - "*.pdf"
+      - "*.zip"
+      - "*.tar.gz"
+  commits:
+    enabled: true
+    limit: 500
+  context:
+    # Disabled by default: .cspace/context/ files are usually small enough
+    # for agents to read directly, and indexing them pays qdrant + embed
+    # cost for negligible retrieval benefit on O(dozens) of files. Enable
+    # per-project by setting enabled: true in search.yaml.
+    enabled: false
+  issues:
+    # Disabled by default: indexing issues requires GH_TOKEN, hits the
+    # GitHub API on every bootstrap/hook, and most projects don't use
+    # issues as a primary retrieval surface. Enable per-project by
+    # setting enabled: true in search.yaml.
+    enabled: false
+    limit: 500
+sidecars:
+  llama_retrieval_url: "http://llama-server:8080"
+  llama_clustering_url: "http://llama-clustering:8080"
+  qdrant_url: "http://qdrant:6333"
+  reduce_url: "http://reduce-api:8000"
+  hdbscan_url: "http://hdbscan-api:8090"
+index:
+  lock_path: ".cspace/search-index.lock"
+  log_path: ".cspace/search-index.log"
