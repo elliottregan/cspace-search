@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand};
 mod commands;
 mod config;
 mod corpus;
+mod embed;
 mod index;
 
 /// cspace-search: local-first semantic search for commits, code, and context.
