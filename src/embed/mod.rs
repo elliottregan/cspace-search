@@ -17,6 +17,19 @@ pub trait Embedder: Send + Sync {
     /// sqlite-vec virtual-table column.
     fn dim(&self) -> usize;
 
+    /// Opaque identity of this embedder: model + config choices that
+    /// affect the vector output. Stored per-collection by the store;
+    /// on subsequent `init` runs, a mismatch triggers drop-and-rebuild
+    /// so a model swap never silently leaves stale vectors in place.
+    ///
+    /// The string is compared for exact equality. It MUST:
+    ///   - differ whenever a different embedder would produce
+    ///     different vectors for the same input;
+    ///   - be stable across process restarts with the same config;
+    ///   - not depend on data outside the embedder's construction
+    ///     (no timestamps, no host paths that might vary by machine).
+    fn fingerprint(&self) -> String;
+
     /// Embed a batch of document texts. Returned vectors are
     /// unit-normalized. Length of the returned vec equals the input
     /// slice length; the indexer checks this and treats a mismatch as
@@ -53,6 +66,13 @@ impl FakeEmbedder {
 impl Embedder for FakeEmbedder {
     fn dim(&self) -> usize {
         self.dim
+    }
+
+    fn fingerprint(&self) -> String {
+        // Dim fully determines the vector space; sha256 seeding is
+        // fixed. No other knobs, so the dim alone is sufficient
+        // identity.
+        format!("fake:dim={}", self.dim)
     }
 
     fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {

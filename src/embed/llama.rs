@@ -55,6 +55,10 @@ pub struct LlamaEmbedder {
     doc_prefix: String,
     /// Prefix prepended to query text in `embed_query`.
     query_prefix: String,
+    /// Human-readable identity of the model source. HF loads produce
+    /// `hf:<repo>/<file>`; local-path loads produce `path:<display>`.
+    /// Used only to build [`Self::fingerprint`]; never parsed.
+    model_identity: String,
     // Serialize calls through a mutex: llama contexts aren't `Sync`,
     // and the model/context pair isn't reusable across threads
     // without external locking. Embedding throughput is batch-bound,
@@ -86,6 +90,20 @@ impl LlamaEmbedder {
         doc_prefix: impl Into<String>,
         query_prefix: impl Into<String>,
     ) -> Result<Self> {
+        let identity = format!("path:{}", path.display());
+        Self::from_path_with_identity(path, dim, doc_prefix, query_prefix, identity)
+    }
+
+    /// Identity-preserving variant used by `from_hf_hub` so the
+    /// fingerprint names the HF coordinate, not the hf-hub cache path
+    /// (which varies by machine).
+    fn from_path_with_identity(
+        path: &Path,
+        dim: usize,
+        doc_prefix: impl Into<String>,
+        query_prefix: impl Into<String>,
+        identity: String,
+    ) -> Result<Self> {
         let backend = shared_backend()?;
         let model_params = LlamaModelParams::default();
         let model = LlamaModel::load_from_file(&backend, path, &model_params)
@@ -103,6 +121,7 @@ impl LlamaEmbedder {
             dim,
             doc_prefix: doc_prefix.into(),
             query_prefix: query_prefix.into(),
+            model_identity: identity,
             lock: Mutex::new(()),
         })
     }
@@ -120,7 +139,13 @@ impl LlamaEmbedder {
         let path: PathBuf = r
             .get(gguf_file)
             .with_context(|| format!("downloading {repo}:{gguf_file}"))?;
-        Self::from_path(&path, dim, doc_prefix, query_prefix)
+        Self::from_path_with_identity(
+            &path,
+            dim,
+            doc_prefix,
+            query_prefix,
+            format!("hf:{repo}/{gguf_file}"),
+        )
     }
 
     /// Convenience: Jina v5 nano retrieval with the Q8_0 GGUF and
@@ -222,6 +247,16 @@ impl LlamaEmbedder {
 impl Embedder for LlamaEmbedder {
     fn dim(&self) -> usize {
         self.dim
+    }
+
+    fn fingerprint(&self) -> String {
+        // Model + prefix pair + dim fully determines the vector
+        // space. `{:?}` on the prefixes quotes them, so an empty vs
+        // whitespace-only prefix can't collide with each other.
+        format!(
+            "llama|{}|dim={}|doc={:?}|query={:?}",
+            self.model_identity, self.dim, self.doc_prefix, self.query_prefix
+        )
     }
 
     fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {

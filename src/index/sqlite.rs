@@ -92,9 +92,52 @@ fn vec_blob(v: &[f32]) -> Vec<u8> {
 }
 
 impl Upserter for SqliteUpserter {
-    fn ensure_collection(&self, name: &str, dim: usize) -> anyhow::Result<()> {
+    fn ensure_collection(&self, name: &str, dim: usize, fingerprint: &str) -> anyhow::Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow!("sqlite mutex: {e}"))?;
         let quoted = quote_ident(name);
+
+        // Meta table tracks one row per vec0 collection: fingerprint of
+        // the embedder that produced its vectors + dim. Fingerprint
+        // mismatch ⇒ the caller changed models and the vectors are no
+        // longer comparable; we drop-and-recreate. Dim mismatch is the
+        // same condition (a dim change is, by definition, a model
+        // swap), but we check it explicitly for a clearer error.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS collection_meta (
+                name TEXT PRIMARY KEY,
+                fingerprint TEXT NOT NULL,
+                dim INTEGER NOT NULL
+            )",
+            [],
+        )
+        .context("ensure collection_meta table")?;
+
+        let stored: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT fingerprint, dim FROM collection_meta WHERE name = ?1",
+                [name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+            .context("read collection_meta")?;
+
+        let needs_rebuild = match &stored {
+            Some((stored_fp, stored_dim)) => {
+                stored_fp != fingerprint || *stored_dim != dim as i64
+            }
+            None => false,
+        };
+
+        if needs_rebuild {
+            let drop_sql = format!("DROP TABLE IF EXISTS {quoted}");
+            conn.execute(&drop_sql, [])
+                .with_context(|| format!("drop stale vec0 table for {name}"))?;
+        }
+
         // vec0 virtual tables support auxiliary columns prefixed with `+`.
         // They're stored as regular sqlite values and aren't indexed for
         // vector search, which is exactly what we want for the payload.
@@ -107,6 +150,18 @@ impl Upserter for SqliteUpserter {
         );
         conn.execute(&sql, [])
             .with_context(|| format!("ensure_collection({name})"))?;
+
+        // Record (or refresh) the meta row. On rebuild we want to
+        // overwrite the stale fingerprint; on first create we want to
+        // record it. INSERT … ON CONFLICT handles both.
+        conn.execute(
+            "INSERT INTO collection_meta (name, fingerprint, dim) VALUES (?1, ?2, ?3)
+             ON CONFLICT(name) DO UPDATE SET fingerprint = excluded.fingerprint,
+                                             dim = excluded.dim",
+            rusqlite::params![name, fingerprint, dim as i64],
+        )
+        .with_context(|| format!("record collection_meta for {name}"))?;
+
         Ok(())
     }
 
@@ -292,14 +347,14 @@ mod tests {
     #[test]
     fn ensure_collection_is_idempotent() {
         let u = SqliteUpserter::in_memory().unwrap();
-        u.ensure_collection("commits-abc", 8).unwrap();
-        u.ensure_collection("commits-abc", 8).unwrap();
+        u.ensure_collection("commits-abc", 8, "fp").unwrap();
+        u.ensure_collection("commits-abc", 8, "fp").unwrap();
     }
 
     #[test]
     fn upsert_then_existing_points_round_trips() {
         let u = SqliteUpserter::in_memory().unwrap();
-        u.ensure_collection("code-xyz", 4).unwrap();
+        u.ensure_collection("code-xyz", 4, "fp").unwrap();
         let pts = vec![
             mk_point(1, "aaa", 4),
             mk_point(2, "bbb", 4),
@@ -317,7 +372,7 @@ mod tests {
     #[test]
     fn upsert_replaces_by_id() {
         let u = SqliteUpserter::in_memory().unwrap();
-        u.ensure_collection("code", 4).unwrap();
+        u.ensure_collection("code", 4, "fp").unwrap();
         u.upsert_points("code", &[mk_point(7, "old", 4)], 8, None)
             .unwrap();
         u.upsert_points("code", &[mk_point(7, "new", 4)], 8, None)
@@ -337,7 +392,7 @@ mod tests {
     #[test]
     fn delete_points_removes_selected_ids() {
         let u = SqliteUpserter::in_memory().unwrap();
-        u.ensure_collection("code", 4).unwrap();
+        u.ensure_collection("code", 4, "fp").unwrap();
         u.upsert_points(
             "code",
             &[
@@ -358,7 +413,7 @@ mod tests {
     #[test]
     fn upsert_reports_progress_per_batch() {
         let u = SqliteUpserter::in_memory().unwrap();
-        u.ensure_collection("code", 4).unwrap();
+        u.ensure_collection("code", 4, "fp").unwrap();
         let pts: Vec<Point> = (1..=10).map(|i| mk_point(i, "h", 4)).collect();
 
         let calls = std::cell::RefCell::new(Vec::<(usize, usize)>::new());
@@ -376,12 +431,61 @@ mod tests {
     }
 
     #[test]
+    fn ensure_collection_preserves_data_on_matching_fingerprint() {
+        let u = SqliteUpserter::in_memory().unwrap();
+        u.ensure_collection("code", 4, "embedder-a").unwrap();
+        u.upsert_points("code", &[mk_point(42, "hash", 4)], 8, None)
+            .unwrap();
+        // Second call with the identical fingerprint must not drop
+        // existing rows — it's the common case (normal re-index).
+        u.ensure_collection("code", 4, "embedder-a").unwrap();
+        let existing = u.existing_points("code").unwrap();
+        assert_eq!(existing.len(), 1, "data should survive idempotent ensure");
+        assert!(existing.contains_key(&42));
+    }
+
+    #[test]
+    fn ensure_collection_drops_on_fingerprint_mismatch() {
+        let u = SqliteUpserter::in_memory().unwrap();
+        u.ensure_collection("code", 4, "embedder-a").unwrap();
+        u.upsert_points("code", &[mk_point(42, "hash", 4)], 8, None)
+            .unwrap();
+        assert_eq!(u.existing_points("code").unwrap().len(), 1);
+
+        // Caller swapped embedders; stale vectors must not linger.
+        u.ensure_collection("code", 4, "embedder-b").unwrap();
+        let existing = u.existing_points("code").unwrap();
+        assert!(
+            existing.is_empty(),
+            "fingerprint mismatch should drop stale vectors, got {existing:?}"
+        );
+
+        // After rebuild, new writes at the same ids succeed.
+        u.upsert_points("code", &[mk_point(42, "new", 4)], 8, None)
+            .unwrap();
+        let after = u.existing_points("code").unwrap();
+        assert_eq!(after.get(&42).unwrap(), "new");
+    }
+
+    #[test]
+    fn ensure_collection_drops_on_dim_mismatch() {
+        // Dim change implies a model change implies incomparable
+        // vectors — same rebuild path as a fingerprint mismatch.
+        let u = SqliteUpserter::in_memory().unwrap();
+        u.ensure_collection("code", 4, "fp").unwrap();
+        u.upsert_points("code", &[mk_point(1, "a", 4)], 8, None)
+            .unwrap();
+        u.ensure_collection("code", 8, "fp").unwrap();
+        assert!(u.existing_points("code").unwrap().is_empty());
+    }
+
+    #[test]
     fn knn_search_returns_nearest_first() {
         // Basic sanity that vec0 actually does what we expect: three
         // orthogonal unit vectors, query with one of them, the matching
         // row should rank first.
         let u = SqliteUpserter::in_memory().unwrap();
-        u.ensure_collection("code", 3).unwrap();
+        u.ensure_collection("code", 3, "fp").unwrap();
         let pts = vec![
             Point {
                 id: 1,

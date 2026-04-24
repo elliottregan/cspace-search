@@ -29,8 +29,21 @@ pub struct Point {
 /// so the indexer can skip unchanged records and delete orphans.
 pub trait Upserter {
     /// Create the collection if missing. `dim` is the embedding
-    /// dimensionality (e.g. 768 for Jina v5 nano).
-    fn ensure_collection(&self, name: &str, dim: usize) -> anyhow::Result<()>;
+    /// dimensionality (e.g. 768 for Jina v5 nano); `fingerprint` is
+    /// the opaque [`Embedder::fingerprint`] of the embedder that will
+    /// produce vectors for this collection.
+    ///
+    /// If the collection already exists with a different fingerprint
+    /// — the caller swapped models between runs — the store MUST
+    /// drop and recreate it so stale vectors never mix with new ones.
+    /// The caller does not need to detect the swap; the decision is
+    /// entirely inside the store.
+    fn ensure_collection(
+        &self,
+        name: &str,
+        dim: usize,
+        fingerprint: &str,
+    ) -> anyhow::Result<()>;
 
     /// Upsert a batch of points. `progress` is called after each
     /// internal batch with `(done, total)`.
@@ -119,8 +132,9 @@ pub fn run(cfg: RunConfig<'_>) -> anyhow::Result<RunStats> {
     let dim = cfg.embedder.dim();
     let collection = cfg.corpus.collection(cfg.project_root);
 
+    let fingerprint = cfg.embedder.fingerprint();
     cfg.upserter
-        .ensure_collection(&collection, dim)
+        .ensure_collection(&collection, dim, &fingerprint)
         .with_context(|| format!("ensure collection {collection}"))?;
     let existing = cfg
         .upserter
