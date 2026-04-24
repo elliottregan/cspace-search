@@ -218,10 +218,12 @@ mod tests {
     /// vectors are byte-identical when the text matches.
     #[test]
     fn run_returns_top_match_for_known_text() {
-        use crate::corpus::ContextCorpus;
+        use crate::config::{CorpusConfig, PathGroupSpec};
+        use crate::corpus::FileCorpus;
         use crate::embed::FakeEmbedder;
         use crate::index::sqlite::SqliteUpserter;
         use crate::index::{self as idx, RunConfig as IdxRun};
+        use std::collections::BTreeMap;
 
         let dir = tempfile::tempdir().unwrap();
         let ctx = dir.path().join(".cspace/context");
@@ -229,7 +231,27 @@ mod tests {
         std::fs::write(ctx.join("principles.md"), "keep it simple").unwrap();
         std::fs::write(ctx.join("roadmap.md"), "ship in phases").unwrap();
 
-        let corpus = ContextCorpus;
+        let context_cfg = CorpusConfig {
+            enabled: true,
+            source: Some("filesystem".into()),
+            type_name: Some("files".into()),
+            record_kind: Some("context".into()),
+            embed_header: Some("Context ({subkind}): {path}\n\n".into()),
+            path_groups: vec![PathGroupSpec {
+                include: vec![
+                    ".cspace/context/direction.md".into(),
+                    ".cspace/context/principles.md".into(),
+                    ".cspace/context/roadmap.md".into(),
+                ],
+                kind: Some("context".into()),
+                chunk: None,
+                extra: [("subkind".to_string(), "{basename_no_ext}".to_string())]
+                    .into_iter()
+                    .collect::<BTreeMap<_, _>>(),
+            }],
+            ..CorpusConfig::default()
+        };
+        let corpus = FileCorpus::from_config("context", &context_cfg).unwrap();
         let embedder = FakeEmbedder::new(32);
         let up = SqliteUpserter::in_memory().unwrap();
 

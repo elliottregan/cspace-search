@@ -38,8 +38,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.10"
 hex = "0.4"
 
-# Glob matching for the code corpus's Filter excludes.
+# Glob matching for the files corpus's Filter excludes.
 glob = "0.3"
+
+# .gitignore-aware walker for the `walk` file source. Same crate
+# ripgrep uses — fast and honours the full .gitignore grammar.
+ignore = "0.4"
 
 # Vector store. rusqlite bundles sqlite3 so users don't need a system
 # install; sqlite-vec adds the vec0 virtual-table kNN extension, loaded

@@ -36,17 +36,99 @@ pub struct Config {
     pub index: IndexConfig,
 }
 
-/// Per-corpus configuration.
+/// Per-corpus configuration. The shape is a union of every field any
+/// corpus builder cares about — unused fields are ignored by the
+/// factory, and every field has a sensible default. Explicit over
+/// tagged-union-deserialize since the YAML deep-merge layer operates
+/// on `serde_yaml::Value` before this struct ever gets constructed.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct CorpusConfig {
     #[serde(default)]
     pub enabled: bool,
+
+    // --- shared across file-style corpora ---
+    /// Reject files larger than this many bytes (FileCorpus). Zero or
+    /// absent means no size cap.
     #[serde(default)]
     pub max_bytes: i64,
+    /// Glob excludes applied after source enumeration (FileCorpus).
     #[serde(default)]
     pub excludes: Vec<String>,
+
+    // --- CommitCorpus ---
+    /// Max commits to index. Zero falls back to the CommitCorpus
+    /// default (500).
     #[serde(default)]
     pub limit: i64,
+
+    // --- FileCorpus ---
+    /// Corpus builder dispatch key. Known: `files`, `commits`. If
+    /// absent, the built-in default for `id` wins.
+    #[serde(default, rename = "type")]
+    pub type_name: Option<String>,
+
+    /// Where to enumerate files from. One of `git-ls-files`,
+    /// `filesystem`, `walk`. Only meaningful when `type = files`.
+    #[serde(default)]
+    pub source: Option<String>,
+
+    /// Chunking at the corpus level. Every PathGroup inherits this
+    /// unless it supplies its own override. Absent means no chunking
+    /// (files go through as a single record, truncated only by the
+    /// embed-text budget).
+    #[serde(default)]
+    pub chunk: Option<ChunkSpec>,
+
+    /// Explicit path groups. When absent, FileCorpus falls back to a
+    /// single group matching everything the `source` enumerates.
+    #[serde(default)]
+    pub path_groups: Vec<PathGroupSpec>,
+
+    /// Header prepended to every Record's `embed_text`. Supports
+    /// `{path}`, `{kind}`, `{basename}`, `{basename_no_ext}`, plus
+    /// any key from a path group's `extra` map. Include any trailing
+    /// blank lines you want explicitly — the engine does not append
+    /// `\n\n` for you.
+    #[serde(default)]
+    pub embed_header: Option<String>,
+
+    /// Default `kind` for records whose PathGroup doesn't override.
+    /// Multi-chunk records override to `"chunk"` per the Go convention.
+    #[serde(default)]
+    pub record_kind: Option<String>,
+
+    /// Truncate each `embed_text` to this many chars after header +
+    /// body concatenation. Falls back to 12 000.
+    #[serde(default)]
+    pub max_embed_chars: Option<usize>,
+}
+
+/// Chunking spec, matches the existing `corpus::chunker::ChunkConfig`
+/// shape. Kept as a separate serde type to keep `ChunkConfig` a pure
+/// runtime concern.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ChunkSpec {
+    #[serde(default)]
+    pub max: usize,
+    #[serde(default)]
+    pub overlap: usize,
+}
+
+/// One include/kind group within a FileCorpus.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct PathGroupSpec {
+    #[serde(default)]
+    pub include: Vec<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub chunk: Option<ChunkSpec>,
+    /// Extra fields to attach to every Record this group produces.
+    /// Values are templates — the same `{path}` / `{basename_no_ext}`
+    /// / etc. substitutions as `embed_header`. Evaluated after the
+    /// built-in vars so a key named `path` would overwrite.
+    #[serde(default)]
+    pub extra: BTreeMap<String, String>,
 }
 
 /// External service URLs. Preserved for transitional compatibility while

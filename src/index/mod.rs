@@ -229,7 +229,8 @@ fn payload_for(r: &Record) -> BTreeMap<String, serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::corpus::ContextCorpus;
+    use crate::config::{CorpusConfig, PathGroupSpec};
+    use crate::corpus::FileCorpus;
     use crate::embed::FakeEmbedder;
     use crate::index::sqlite::SqliteUpserter;
     use std::fs;
@@ -241,6 +242,40 @@ mod tests {
             let p = ctx.join(rel);
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(p, body).unwrap();
+        }
+    }
+
+    /// Test-local context corpus matching the default.yaml shape but
+    /// opted on. Keeps the indexer tests independent of what the
+    /// default ships.
+    fn context_cfg() -> CorpusConfig {
+        CorpusConfig {
+            enabled: true,
+            source: Some("filesystem".into()),
+            type_name: Some("files".into()),
+            record_kind: Some("context".into()),
+            embed_header: Some("Context ({subkind}): {path}\n\n".into()),
+            path_groups: vec![
+                PathGroupSpec {
+                    include: vec![
+                        ".cspace/context/direction.md".into(),
+                        ".cspace/context/principles.md".into(),
+                        ".cspace/context/roadmap.md".into(),
+                    ],
+                    kind: Some("context".into()),
+                    chunk: None,
+                    extra: [("subkind".to_string(), "{basename_no_ext}".to_string())]
+                        .into_iter()
+                        .collect(),
+                },
+                PathGroupSpec {
+                    include: vec![".cspace/context/findings/**/*.md".into()],
+                    kind: Some("finding".into()),
+                    chunk: None,
+                    extra: std::collections::BTreeMap::new(),
+                },
+            ],
+            ..CorpusConfig::default()
         }
     }
 
@@ -256,7 +291,7 @@ mod tests {
             ],
         );
 
-        let corpus = ContextCorpus;
+        let corpus = FileCorpus::from_config("context", &context_cfg()).unwrap();
         let embedder = FakeEmbedder::new(16);
         let upserter = SqliteUpserter::in_memory().unwrap();
 
@@ -290,7 +325,7 @@ mod tests {
             ],
         );
 
-        let corpus = ContextCorpus;
+        let corpus = FileCorpus::from_config("context", &context_cfg()).unwrap();
         let embedder = FakeEmbedder::new(16);
         let upserter = SqliteUpserter::in_memory().unwrap();
 
@@ -334,7 +369,7 @@ mod tests {
             ],
         );
 
-        let corpus = ContextCorpus;
+        let corpus = FileCorpus::from_config("context", &context_cfg()).unwrap();
         let embedder = FakeEmbedder::new(16);
         let upserter = SqliteUpserter::in_memory().unwrap();
 
@@ -382,7 +417,7 @@ mod tests {
             ],
         );
 
-        let corpus = ContextCorpus;
+        let corpus = FileCorpus::from_config("context", &context_cfg()).unwrap();
         let embedder = FakeEmbedder::new(8);
         let upserter = SqliteUpserter::in_memory().unwrap();
 
@@ -407,7 +442,7 @@ mod tests {
     fn empty_corpus_is_a_noop() {
         let dir = tempfile::tempdir().unwrap();
         // .cspace/context/ doesn't exist at all.
-        let corpus = ContextCorpus;
+        let corpus = FileCorpus::from_config("context", &context_cfg()).unwrap();
         let embedder = FakeEmbedder::new(8);
         let upserter = SqliteUpserter::in_memory().unwrap();
         let stats = run(RunConfig {

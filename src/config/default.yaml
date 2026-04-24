@@ -3,20 +3,23 @@
 #
 # Master switch: search is off by default. Projects opt in by setting
 # `enabled: true` in their own search.yaml. Without that, every search
-# CLI + MCP + bootstrap path fast-exits without touching qdrant or llama.
-# Prevents newly-cloned cspace projects from auto-indexing node_modules
-# on first container boot.
+# CLI + MCP + bootstrap path fast-exits without touching the vector
+# store. Prevents newly-cloned projects from auto-indexing
+# node_modules on first container boot.
 enabled: false
+
 corpora:
+  # `code`: every git-tracked text file, chunked at ~12K chars, with
+  # a "File: <path>" header for Jina v5 retrieval. The default for
+  # "I want semantic search over my source code."
   code:
     enabled: true
+    type: files
+    source: git-ls-files
     max_bytes: 204800
     excludes:
       - "vendor/**"
       - "internal/assets/embedded/**"
-      # All prose/docs deferred to a future docs corpus. Keeps the code
-      # corpus focused on actual source: Go, shell, YAML, and the in-tree
-      # skill/command/agent .md files under lib/.
       - "docs/**"
       - "*.lock"
       - "*.sum"
@@ -31,22 +34,65 @@ corpora:
       - "*.pdf"
       - "*.zip"
       - "*.tar.gz"
+    chunk:
+      max: 12000
+      overlap: 200
+    record_kind: file
+    embed_header: "File: {path}\n\n"
+
+  # `commits`: git commit history. Still a special-case corpus (uses
+  # `git log` / `git show` / `git diff` rather than a file walk), so
+  # it stays on its own builder.
   commits:
     enabled: true
+    type: commits
     limit: 500
+
+  # `context`: the layered planning artifacts under .cspace/context/.
+  # Each path group gets its own `kind` (context / finding /
+  # decision / discovery). The top-level files additionally carry a
+  # `subkind` derived from the filename — used by the embed header.
+  #
+  # Disabled by default: these files are usually small enough for
+  # agents to read directly, and indexing them pays embedding cost
+  # for negligible retrieval benefit on O(dozens) of files.
   context:
-    # Disabled by default: .cspace/context/ files are usually small enough
-    # for agents to read directly, and indexing them pays qdrant + embed
-    # cost for negligible retrieval benefit on O(dozens) of files. Enable
-    # per-project by setting enabled: true in search.yaml.
     enabled: false
+    type: files
+    source: filesystem
+    record_kind: context
+    embed_header: "Context ({subkind}): {path}\n\n"
+    path_groups:
+      - include:
+          - ".cspace/context/direction.md"
+          - ".cspace/context/principles.md"
+          - ".cspace/context/roadmap.md"
+        kind: context
+        extra:
+          subkind: "{basename_no_ext}"
+      - include: [".cspace/context/findings/**/*.md"]
+        kind: finding
+        extra:
+          subkind: "finding"
+      - include: [".cspace/context/decisions/**/*.md"]
+        kind: decision
+        extra:
+          subkind: "decision"
+      - include: [".cspace/context/discoveries/**/*.md"]
+        kind: discovery
+        extra:
+          subkind: "discovery"
+
+  # `issues`: placeholder. The Go version indexed GitHub issues via
+  # `gh api`; the Rust port defers this until Phase 2b-4. The explicit
+  # `type: issues` makes the corpus factory emit a clear "unknown
+  # corpus type" error if a user opts in, rather than silently
+  # falling through to the `files` default and indexing the whole repo.
   issues:
-    # Disabled by default: indexing issues requires GH_TOKEN, hits the
-    # GitHub API on every bootstrap/hook, and most projects don't use
-    # issues as a primary retrieval surface. Enable per-project by
-    # setting enabled: true in search.yaml.
     enabled: false
+    type: issues
     limit: 500
+
 sidecars:
   llama_retrieval_url: "http://llama-server:8080"
   llama_clustering_url: "http://llama-clustering:8080"

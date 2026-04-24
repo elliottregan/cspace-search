@@ -26,6 +26,9 @@ pub enum SearchError {
 
     #[error("unknown corpus {corpus:?} (known: code, commits, context, issues)")]
     UnknownCorpus { corpus: String },
+
+    #[error("building corpus {corpus:?}: {detail}")]
+    BuildFailed { corpus: String, detail: String },
 }
 
 /// Pairs a loaded config with a ready-to-run corpus for one command
@@ -56,33 +59,35 @@ pub fn build_with_config(
     Ok(Runtime { cfg, corpus })
 }
 
-/// Instantiate the named corpus with config-provided knobs. Only
-/// succeeds for IDs known to this build; Phase 2b-4 adds `"issues"`.
+/// Instantiate the named corpus with config-provided knobs.
+///
+/// Builder dispatch reads `corpora.<id>.type` (falling back to
+/// `"files"` for unknown IDs, since that's the common case). `files`
+/// corpora are fully config-driven; `commits` remains a special case
+/// (it doesn't walk paths). `issues` is deferred until Phase 2b-4.
 fn build_corpus(id: &str, cfg: &Config) -> Result<Box<dyn Corpus>, SearchError> {
-    match id {
-        "code" => {
-            let cc = cfg.corpora.get("code").cloned().unwrap_or_default();
-            Ok(Box::new(corpus::CodeCorpus {
-                filter: crate::corpus::filter::Filter {
-                    max_bytes: cc.max_bytes as u64,
-                    excludes: cc.excludes,
-                },
-                chunk: crate::corpus::chunker::ChunkConfig {
-                    max: 12_000,
-                    overlap: 200,
-                },
-            }))
+    let cc = cfg.corpora.get(id).cloned().unwrap_or_default();
+    // Legacy id-based fallback for configs that predate the `type`
+    // field: `commits` → commits, everything else → files.
+    let ty = match cc.type_name.as_deref() {
+        Some(t) => t,
+        None if id == "commits" => "commits",
+        None => "files",
+    };
+    match ty {
+        "files" => {
+            let fc =
+                corpus::FileCorpus::from_config(id, &cc).map_err(|e| SearchError::BuildFailed {
+                    corpus: id.to_string(),
+                    detail: e.to_string(),
+                })?;
+            Ok(Box::new(fc))
         }
-        "commits" => {
-            let cc = cfg.corpora.get("commits").cloned().unwrap_or_default();
-            Ok(Box::new(corpus::CommitCorpus {
-                limit: cc.limit.max(0) as usize,
-            }))
-        }
-        "context" => Ok(Box::new(corpus::ContextCorpus)),
-        // "issues" intentionally omitted until Phase 2b-4 lands.
-        _ => Err(SearchError::UnknownCorpus {
-            corpus: id.to_string(),
+        "commits" => Ok(Box::new(corpus::CommitCorpus {
+            limit: cc.limit.max(0) as usize,
+        })),
+        other => Err(SearchError::UnknownCorpus {
+            corpus: format!("{id} (type = {other})"),
         }),
     }
 }
