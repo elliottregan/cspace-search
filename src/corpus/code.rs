@@ -111,7 +111,9 @@ fn iso_utc_now() -> String {
     // `YYYY-MM-DDTHH:MM:SSZ` using UNIX-epoch math. Good enough for the
     // `mtime` payload field, which exists only so qdrant searches can
     // filter by recency (not for round-tripping to dates).
-    let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = dur.as_secs() as i64;
     let (y, mo, d, h, mi, s) = civil_from_unix_secs(secs);
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
@@ -232,7 +234,11 @@ mod tests {
             },
         };
         let records = cc.enumerate(dir.path()).unwrap();
-        assert!(records.len() >= 2, "expected ≥2 chunks, got {}", records.len());
+        assert!(
+            records.len() >= 2,
+            "expected ≥2 chunks, got {}",
+            records.len()
+        );
         for r in &records {
             assert_eq!(r.kind, "chunk");
         }
@@ -259,10 +265,7 @@ mod tests {
         // Exactly one day after epoch.
         assert_eq!(civil_from_unix_secs(86_400), (1970, 1, 2, 0, 0, 0));
         // 2000-02-29 (leap day) at 12:34:56Z = 951_827_696.
-        assert_eq!(
-            civil_from_unix_secs(951_827_696),
-            (2000, 2, 29, 12, 34, 56)
-        );
+        assert_eq!(civil_from_unix_secs(951_827_696), (2000, 2, 29, 12, 34, 56));
         // 2024-12-31T23:59:59Z (end of 2024 leap year) = 1_735_689_599.
         assert_eq!(
             civil_from_unix_secs(1_735_689_599),

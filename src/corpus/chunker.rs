@@ -153,7 +153,11 @@ mod tests {
                 overlap: 200,
             },
         );
-        assert!(chunks.len() >= 2, "expected ≥2 chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() >= 2,
+            "expected ≥2 chunks, got {}",
+            chunks.len()
+        );
         assert_eq!(chunks[0].line_start, 1);
         for i in 1..chunks.len() {
             assert!(
