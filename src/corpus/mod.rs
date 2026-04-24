@@ -16,10 +16,12 @@ use std::path::{Path, PathBuf};
 mod chunker;
 mod code;
 mod commits;
+mod context;
 mod filter;
 
 pub use code::CodeCorpus;
 pub use commits::CommitCorpus;
+pub use context::ContextCorpus;
 
 /// One unit of content to be indexed. May represent a whole file, a
 /// chunk of a file, or a commit; [`Record::kind`] disambiguates.
