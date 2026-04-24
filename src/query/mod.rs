@@ -11,6 +11,7 @@ use crate::embed::Embedder;
 use crate::index::Searcher;
 use anyhow::{Context, Result};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Default result count when the caller passes zero.
@@ -35,6 +36,11 @@ pub struct Hit {
     pub preview: String,
     #[serde(skip_serializing_if = "is_default_cluster")]
     pub cluster_id: i64,
+    /// Corpus-specific payload fields we don't hoist into typed
+    /// columns (commit author + date, finding status, etc.). Empty
+    /// for file corpora that only populate the core columns.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 fn is_default_cluster(v: &i64) -> bool {
@@ -123,6 +129,18 @@ pub fn dedupe_by_path(hits: Vec<Hit>) -> Vec<Hit> {
     out
 }
 
+/// Payload keys hoisted into dedicated `Hit` fields. Every other key
+/// is forwarded to `Hit.extra` so corpus-specific fields (commit
+/// author, finding status, …) survive the query path.
+const CORE_PAYLOAD_KEYS: &[&str] = &[
+    "path",
+    "kind",
+    "line_start",
+    "line_end",
+    "content_hash",
+    "cluster_id",
+];
+
 fn hit_from_raw(r: crate::index::RawHit) -> Hit {
     let mut h = Hit {
         path: String::new(),
@@ -133,6 +151,7 @@ fn hit_from_raw(r: crate::index::RawHit) -> Hit {
         content_hash: String::new(),
         preview: String::new(),
         cluster_id: 0,
+        extra: BTreeMap::new(),
     };
     if let Some(v) = r.payload.get("path").and_then(|v| v.as_str()) {
         h.path = v.to_string();
@@ -151,6 +170,12 @@ fn hit_from_raw(r: crate::index::RawHit) -> Hit {
     }
     if let Some(v) = r.payload.get("cluster_id").and_then(|v| v.as_i64()) {
         h.cluster_id = v;
+    }
+    for (k, v) in r.payload {
+        if CORE_PAYLOAD_KEYS.contains(&k.as_str()) {
+            continue;
+        }
+        h.extra.insert(k, v);
     }
     h
 }
@@ -183,6 +208,7 @@ mod tests {
             content_hash: String::new(),
             preview: String::new(),
             cluster_id: 0,
+            extra: BTreeMap::new(),
         }
     }
 
