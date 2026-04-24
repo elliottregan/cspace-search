@@ -1,4 +1,5 @@
 use crate::config;
+use crate::embed::cache::{CachedEmbedder, EmbedCache};
 use crate::embed::llama::{LlamaEmbedder, DEFAULT_DIM};
 use crate::embed::{Embedder, FakeEmbedder};
 use crate::index::{self, sqlite::SqliteUpserter, RunConfig};
@@ -40,6 +41,13 @@ pub struct Args {
     /// (768 for Jina v5 nano).
     #[arg(long, default_value_t = DEFAULT_DIM)]
     pub dim: usize,
+
+    /// Skip the global embedding cache at
+    /// `~/.cspace-search/embed-cache.db`. Useful for a one-off clean
+    /// rebuild, or when debugging a suspected poisoned-cache bug.
+    /// Off by default: cache-on is the fast path.
+    #[arg(long)]
+    pub no_embed_cache: bool,
 }
 
 pub fn run(args: Args) -> anyhow::Result<()> {
@@ -64,11 +72,21 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     let db_path = util::index_db_path(&root)?;
     let upserter = SqliteUpserter::open(&db_path)?;
     // Boxed to a trait object so both embedders share a codepath below.
-    let embedder: Box<dyn Embedder> = if args.fake_embedder {
-        Box::new(FakeEmbedder::new(args.dim))
-    } else {
-        eprintln!("Loading Jina v5 nano retrieval (first use downloads ~80MB)...");
-        Box::new(LlamaEmbedder::jina_v5_nano_retrieval()?)
+    // The global embed cache wraps the inner embedder transparently;
+    // `--no-embed-cache` drops to the inner directly.
+    let embedder: Box<dyn Embedder> = {
+        let inner: Box<dyn Embedder> = if args.fake_embedder {
+            Box::new(FakeEmbedder::new(args.dim))
+        } else {
+            eprintln!("Loading Jina v5 nano retrieval (first use downloads ~80MB)...");
+            Box::new(LlamaEmbedder::jina_v5_nano_retrieval()?)
+        };
+        if args.no_embed_cache {
+            inner
+        } else {
+            let cache = EmbedCache::open(util::embed_cache_path()?)?;
+            Box::new(CachedEmbedder::new(inner, cache))
+        }
     };
 
     for id in &corpora {

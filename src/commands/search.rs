@@ -1,4 +1,5 @@
 use crate::config;
+use crate::embed::cache::{CachedEmbedder, EmbedCache};
 use crate::embed::llama::LlamaEmbedder;
 use crate::embed::{Embedder, FakeEmbedder};
 use crate::index::sqlite::SqliteUpserter;
@@ -40,6 +41,12 @@ pub struct Args {
     /// Embedding dim for `--fake-embedder`. Ignored otherwise.
     #[arg(long, default_value_t = crate::embed::llama::DEFAULT_DIM)]
     pub dim: usize,
+
+    /// Skip the global embedding cache when computing the query
+    /// vector. Rarely useful — query-side cache misses cost one model
+    /// forward pass — but handy while debugging the cache itself.
+    #[arg(long)]
+    pub no_embed_cache: bool,
 }
 
 pub fn run(args: Args) -> anyhow::Result<()> {
@@ -48,10 +55,18 @@ pub fn run(args: Args) -> anyhow::Result<()> {
 
     let runtime = config::runtime::build_with_config(&root, &args.corpus, cfg)?;
 
-    let embedder: Box<dyn Embedder> = if args.fake_embedder {
-        Box::new(FakeEmbedder::new(args.dim))
-    } else {
-        Box::new(LlamaEmbedder::jina_v5_nano_retrieval()?)
+    let embedder: Box<dyn Embedder> = {
+        let inner: Box<dyn Embedder> = if args.fake_embedder {
+            Box::new(FakeEmbedder::new(args.dim))
+        } else {
+            Box::new(LlamaEmbedder::jina_v5_nano_retrieval()?)
+        };
+        if args.no_embed_cache {
+            inner
+        } else {
+            let cache = EmbedCache::open(util::embed_cache_path()?)?;
+            Box::new(CachedEmbedder::new(inner, cache))
+        }
     };
 
     let db_path = util::index_db_path(&root)?;

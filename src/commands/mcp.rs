@@ -23,6 +23,7 @@
 //! tool-name-per-corpus would improve discoverability.
 
 use crate::config;
+use crate::embed::cache::{CachedEmbedder, EmbedCache};
 use crate::embed::llama::LlamaEmbedder;
 use crate::embed::{Embedder, FakeEmbedder};
 use crate::index::sqlite::SqliteUpserter;
@@ -59,6 +60,11 @@ pub struct Args {
     /// Embedding dim for `--fake-embedder`. Ignored otherwise.
     #[arg(long, default_value_t = crate::embed::llama::DEFAULT_DIM)]
     pub dim: usize,
+
+    /// Skip the global embedding cache. See `init --help` for the
+    /// tradeoff.
+    #[arg(long)]
+    pub no_embed_cache: bool,
 }
 
 pub fn run(args: Args) -> anyhow::Result<()> {
@@ -73,13 +79,21 @@ async fn run_async(args: Args) -> anyhow::Result<()> {
 
     // Eagerly resolve deps so we fail fast with a clear error before
     // handing stdio over to the MCP transport.
-    let embedder: Arc<dyn Embedder> = if args.fake_embedder {
-        Arc::new(FakeEmbedder::new(args.dim))
-    } else {
-        // First-use cost of the HF download goes to stderr; the MCP
-        // transport owns stdout.
-        eprintln!("cspace-search mcp: loading Jina v5 nano retrieval (first use downloads ~80MB)...");
-        Arc::new(LlamaEmbedder::jina_v5_nano_retrieval()?)
+    let embedder: Arc<dyn Embedder> = {
+        let inner: Box<dyn Embedder> = if args.fake_embedder {
+            Box::new(FakeEmbedder::new(args.dim))
+        } else {
+            // First-use cost of the HF download goes to stderr; the MCP
+            // transport owns stdout.
+            eprintln!("cspace-search mcp: loading Jina v5 nano retrieval (first use downloads ~80MB)...");
+            Box::new(LlamaEmbedder::jina_v5_nano_retrieval()?)
+        };
+        if args.no_embed_cache {
+            Arc::<Box<dyn Embedder>>::from(inner)
+        } else {
+            let cache = EmbedCache::open(util::embed_cache_path()?)?;
+            Arc::new(CachedEmbedder::new(inner, cache))
+        }
     };
     let db_path = util::index_db_path(&root)?;
     let store = Arc::new(SqliteUpserter::open(&db_path)?);

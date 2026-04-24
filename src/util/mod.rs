@@ -32,6 +32,14 @@ pub fn index_db_path(project_root: &std::path::Path) -> anyhow::Result<PathBuf> 
         .join(format!("{hash}.db")))
 }
 
+/// Path to the global embedding cache. Shared across every project on
+/// this machine — keyed internally by (fingerprint, text_hash), so
+/// different models and different texts never collide. Wiping this
+/// file is safe; the next `init` just re-embeds what it needs.
+pub fn embed_cache_path() -> anyhow::Result<PathBuf> {
+    Ok(home_dir()?.join(".cspace-search").join("embed-cache.db"))
+}
+
 /// The user's home directory, from `$HOME`. macOS + Linux only —
 /// Windows support is out of scope for v0.1 and would use
 /// `%USERPROFILE%` plus a different default config location anyway.

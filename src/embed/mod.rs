@@ -7,6 +7,7 @@
 
 #![allow(dead_code)]
 
+pub mod cache;
 pub mod llama;
 
 use sha2::{Digest, Sha256};
@@ -43,6 +44,25 @@ pub trait Embedder: Send + Sync {
     /// separate codepath even though the underlying inference is the
     /// same shape as a batch-of-one.
     fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>>;
+}
+
+/// Blanket forwarding impl so `Box<dyn Embedder>` satisfies the
+/// `Embedder` bound itself — lets the CLI build a boxed pipeline
+/// (inner + optional cache wrapper) as a trait object without
+/// introducing a concrete wrapper type per combination.
+impl Embedder for Box<dyn Embedder> {
+    fn dim(&self) -> usize {
+        (**self).dim()
+    }
+    fn fingerprint(&self) -> String {
+        (**self).fingerprint()
+    }
+    fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        (**self).embed(texts)
+    }
+    fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        (**self).embed_query(text)
+    }
 }
 
 /// Deterministic content-addressed embedder for tests and for wiring
