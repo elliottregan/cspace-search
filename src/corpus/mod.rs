@@ -155,22 +155,34 @@ mod tests {
             embed_text: String::new(),
         };
         let variants = [
-            ("path", Record {
-                path: "bar.go".into(),
-                ..base.clone()
-            }),
-            ("line_start", Record {
-                line_start: 1,
-                ..base.clone()
-            }),
-            ("line_end", Record {
-                line_end: 21,
-                ..base.clone()
-            }),
-            ("kind", Record {
-                kind: "file".into(),
-                ..base.clone()
-            }),
+            (
+                "path",
+                Record {
+                    path: "bar.go".into(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "line_start",
+                Record {
+                    line_start: 1,
+                    ..base.clone()
+                },
+            ),
+            (
+                "line_end",
+                Record {
+                    line_end: 21,
+                    ..base.clone()
+                },
+            ),
+            (
+                "kind",
+                Record {
+                    kind: "file".into(),
+                    ..base.clone()
+                },
+            ),
         ];
         for (name, v) in &variants {
             assert_ne!(v.id(), base.id(), "{name} should produce a different id");
