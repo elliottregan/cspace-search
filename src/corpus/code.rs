@@ -254,11 +254,32 @@ mod tests {
 
     #[test]
     fn civil_from_unix_secs_known_values() {
-        // 2026-04-24T05:00:00Z = 1777266000
-        let (y, mo, d, h, mi, s) = civil_from_unix_secs(1_777_266_000);
-        assert_eq!((y, mo, d, h, mi, s), (2026, 4, 24, 5, 0, 0));
-        // Epoch
-        let (y, mo, d, h, mi, s) = civil_from_unix_secs(0);
-        assert_eq!((y, mo, d, h, mi, s), (1970, 1, 1, 0, 0, 0));
+        // Epoch.
+        assert_eq!(civil_from_unix_secs(0), (1970, 1, 1, 0, 0, 0));
+        // Exactly one day after epoch.
+        assert_eq!(civil_from_unix_secs(86_400), (1970, 1, 2, 0, 0, 0));
+        // 2000-02-29 (leap day) at 12:34:56Z = 951_827_696.
+        assert_eq!(
+            civil_from_unix_secs(951_827_696),
+            (2000, 2, 29, 12, 34, 56)
+        );
+        // 2024-12-31T23:59:59Z (end of 2024 leap year) = 1_735_689_599.
+        assert_eq!(
+            civil_from_unix_secs(1_735_689_599),
+            (2024, 12, 31, 23, 59, 59)
+        );
+    }
+
+    #[test]
+    fn iso_utc_now_is_rfc3339_shaped() {
+        let now = iso_utc_now();
+        // 2026-04-24T05:00:00Z is 20 characters: 4-2-2 T 2:2:2 Z
+        assert_eq!(now.len(), 20, "got {now:?}");
+        assert!(now.ends_with('Z'), "got {now:?}");
+        assert_eq!(&now[4..5], "-");
+        assert_eq!(&now[7..8], "-");
+        assert_eq!(&now[10..11], "T");
+        assert_eq!(&now[13..14], ":");
+        assert_eq!(&now[16..17], ":");
     }
 }
