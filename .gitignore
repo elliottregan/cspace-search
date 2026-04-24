@@ -1,0 +1,18 @@
+/target
+Cargo.lock.backup
+.env
+.envrc
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Model files — downloaded at runtime, never committed.
+/models/
+*.gguf
+*.safetensors
+*.onnx

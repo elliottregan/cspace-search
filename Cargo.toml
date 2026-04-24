@@ -1,0 +1,49 @@
+[package]
+name = "cspace-search"
+version = "0.1.0"
+edition = "2021"
+description = "Local-first semantic search for commits, code, and project context."
+repository = "https://github.com/elliottregan/cspace-search"
+license = "PolyForm-Perimeter-1.0.0"
+readme = "README.md"
+
+# Strip and LTO for release; fast iteration in dev.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+opt-level = 3
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "cargo"] }
+
+# Config + serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Async runtime (required for candle + rmcp + http)
+tokio = { version = "1", features = ["full"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Added in later phases:
+# candle-core       — model runtime (Phase: embed)
+# candle-nn         — layers
+# candle-transformers — Jina v5 arch
+# rusqlite          — sqlite-vec host (Phase: index)
+# sqlite-vec        — vector extension
+# rmcp              — MCP server (Phase: mcp)
+# git2              — libgit2 for commit walking (Phase: corpus/commits)
+# ignore            — .gitignore-aware file walker (Phase: corpus/code)
+# ureq or reqwest   — HTTP client for reduce-api, if we keep it
+
+[dev-dependencies]
+tempfile = "3"
