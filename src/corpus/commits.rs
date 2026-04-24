@@ -5,6 +5,10 @@
 //! the dependency surface zero, and the parsing cost is negligible
 //! against a 500-commit default limit.
 
+// See note on the module-level allow in src/corpus/mod.rs. Dropped when
+// Phase 2b-5 wires CommitCorpus into the init / search pipeline.
+#![allow(dead_code)]
+
 use crate::corpus::{project_hash, truncate_utf8, Corpus, Record};
 use anyhow::{anyhow, Context};
 use std::collections::BTreeMap;

@@ -4,6 +4,11 @@
 //! them to the vector store. The same pipeline serves commits, code,
 //! context, and issues. Port of the Go `search/corpus` package.
 
+// Phase 2b-1: types and commits walker land here but no non-test code
+// consumes them yet. Phases 2b-2..2b-5 wire them into init/search/mcp
+// and this allow comes off.
+#![allow(dead_code, unused_imports)]
+
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
