@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+#[derive(Debug)]
 pub struct ContextCorpus;
 
 const MAX_EMBED_CHARS: usize = 12_000;

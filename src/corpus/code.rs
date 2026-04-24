@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(Debug)]
 pub struct CodeCorpus {
     pub filter: filter::Filter,
     pub chunk: chunker::ChunkConfig,

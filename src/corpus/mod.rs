@@ -4,20 +4,22 @@
 //! them to the vector store. The same pipeline serves commits, code,
 //! context, and issues. Port of the Go `search/corpus` package.
 
-// Phase 2b-1: types and commits walker land here but no non-test code
-// consumes them yet. Phases 2b-2..2b-5 wire them into init/search/mcp
-// and this allow comes off.
-#![allow(dead_code, unused_imports)]
+// Phase 2b-5 wires corpora into config::runtime. iso_utc_now() and a
+// few other helpers are only used through the Corpus trait from one
+// subcommand; keep the allow until Phase 5 (query) exercises every
+// path non-trivially.
+#![allow(dead_code)]
 
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-mod chunker;
+pub mod chunker;
+pub mod filter;
+
 mod code;
 mod commits;
 mod context;
-mod filter;
 
 pub use code::CodeCorpus;
 pub use commits::CommitCorpus;
@@ -105,7 +107,9 @@ pub(crate) fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
 }
 
 /// An indexable content type (commits, code, context, issues).
-pub trait Corpus {
+/// `Debug` is required so `Runtime` and test assertions can format
+/// the corpus without each callsite doing a manual impl.
+pub trait Corpus: std::fmt::Debug {
     /// Stable corpus identifier (`"commits"`, `"code"`, etc).
     fn id(&self) -> &'static str;
 
