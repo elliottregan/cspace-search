@@ -11,18 +11,25 @@ pub mod llama;
 
 use sha2::{Digest, Sha256};
 
-/// Embedder embeds texts in batches and returns unit vectors.
-/// Trait is sync for now; Phase 4b can switch to an `async_trait`
-/// if the candle inference path benefits from it.
+/// Embedder embeds texts and returns unit vectors.
 pub trait Embedder: Send + Sync {
     /// Output dimensionality. Used by the indexer to size the
     /// sqlite-vec virtual-table column.
     fn dim(&self) -> usize;
 
-    /// Embed a batch of texts. Returned vectors are unit-normalized.
-    /// Length of the returned vec equals the input slice length; the
-    /// indexer checks this and treats a mismatch as a hard error.
+    /// Embed a batch of document texts. Returned vectors are
+    /// unit-normalized. Length of the returned vec equals the input
+    /// slice length; the indexer checks this and treats a mismatch as
+    /// a hard error. Implementations may prepend a task prefix
+    /// (Jina v5 uses `"Document: "` for indexing).
     fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>>;
+
+    /// Embed a single query string. Jina-family retrieval models
+    /// expect a different prefix (`"Query: "`) at query time than
+    /// indexing time, so implementations route this through a
+    /// separate codepath even though the underlying inference is the
+    /// same shape as a batch-of-one.
+    fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>>;
 }
 
 /// Deterministic content-addressed embedder for tests and for wiring
@@ -50,6 +57,13 @@ impl Embedder for FakeEmbedder {
 
     fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
         Ok(texts.iter().map(|t| fake_vec(t, self.dim)).collect())
+    }
+
+    fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        // No prefix distinction for the fake — keep a query's vector
+        // byte-identical to the doc-side vector of the same text, so
+        // tests see cos == 1.0 for a round-trip.
+        Ok(fake_vec(text, self.dim))
     }
 }
 

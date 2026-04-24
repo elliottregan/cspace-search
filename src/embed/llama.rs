@@ -35,6 +35,8 @@ pub const DEFAULT_REPO: &str = "jinaai/jina-embeddings-v5-text-nano-retrieval";
 pub const DEFAULT_GGUF_FILE: &str = "v5-nano-retrieval-Q8_0.gguf";
 /// Jina v5 retrieval adapter expects this prefix at indexing time.
 pub const DEFAULT_DOC_PREFIX: &str = "Document: ";
+/// Jina v5 retrieval adapter expects this prefix at query time.
+pub const DEFAULT_QUERY_PREFIX: &str = "Query: ";
 /// Jina v5 nano retrieval is 768-dimensional.
 pub const DEFAULT_DIM: usize = 768;
 /// Default context window. Jina v5 supports up to 8192 tokens; our
@@ -49,7 +51,10 @@ pub struct LlamaEmbedder {
     model: LlamaModel,
     ctx_params: LlamaContextParams,
     dim: usize,
-    prefix: String,
+    /// Prefix prepended to document text in `embed`.
+    doc_prefix: String,
+    /// Prefix prepended to query text in `embed_query`.
+    query_prefix: String,
     // Serialize calls through a mutex: llama contexts aren't `Sync`,
     // and the model/context pair isn't reusable across threads
     // without external locking. Embedding throughput is batch-bound,
@@ -74,8 +79,13 @@ fn shared_backend() -> Result<Arc<LlamaBackend>> {
 }
 
 impl LlamaEmbedder {
-    /// Load a GGUF model from a local path.
-    pub fn from_path(path: &Path, dim: usize, prefix: impl Into<String>) -> Result<Self> {
+    /// Load a GGUF model from a local path with explicit prefixes.
+    pub fn from_path(
+        path: &Path,
+        dim: usize,
+        doc_prefix: impl Into<String>,
+        query_prefix: impl Into<String>,
+    ) -> Result<Self> {
         let backend = shared_backend()?;
         let model_params = LlamaModelParams::default();
         let model = LlamaModel::load_from_file(&backend, path, &model_params)
@@ -91,7 +101,8 @@ impl LlamaEmbedder {
             model,
             ctx_params,
             dim,
-            prefix: prefix.into(),
+            doc_prefix: doc_prefix.into(),
+            query_prefix: query_prefix.into(),
             lock: Mutex::new(()),
         })
     }
@@ -101,53 +112,41 @@ impl LlamaEmbedder {
         repo: &str,
         gguf_file: &str,
         dim: usize,
-        prefix: impl Into<String>,
+        doc_prefix: impl Into<String>,
+        query_prefix: impl Into<String>,
     ) -> Result<Self> {
         let api = hf_hub::api::sync::Api::new().context("creating hf-hub API client")?;
         let r = api.model(repo.to_string());
         let path: PathBuf = r
             .get(gguf_file)
             .with_context(|| format!("downloading {repo}:{gguf_file}"))?;
-        Self::from_path(&path, dim, prefix)
+        Self::from_path(&path, dim, doc_prefix, query_prefix)
     }
 
     /// Convenience: Jina v5 nano retrieval with the Q8_0 GGUF and
-    /// the standard document prefix.
+    /// the standard `Document: ` / `Query: ` prefix pair.
     pub fn jina_v5_nano_retrieval() -> Result<Self> {
         Self::from_hf_hub(
             DEFAULT_REPO,
             DEFAULT_GGUF_FILE,
             DEFAULT_DIM,
             DEFAULT_DOC_PREFIX,
+            DEFAULT_QUERY_PREFIX,
         )
     }
-}
 
-impl Embedder for LlamaEmbedder {
-    fn dim(&self) -> usize {
-        self.dim
-    }
-
-    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
+    /// Shared inference core. Takes already-prefixed texts and runs
+    /// the full tokenize → batch → decode → pool → L2-normalize
+    /// pipeline.
+    fn embed_prefixed(&self, prefixed: &[String]) -> Result<Vec<Vec<f32>>> {
+        if prefixed.is_empty() {
             return Ok(Vec::new());
         }
-
-        // Serialize against other callers on this embedder. Creating a
-        // fresh context per embed() call keeps the KV cache clean and
-        // lets us size the batch to exactly this call's footprint.
         let _guard = self.lock.lock().map_err(|e| anyhow!("llama mutex: {e}"))?;
 
-        // Prefix every input.
-        let prefixed: Vec<String> = texts
-            .iter()
-            .map(|t| format!("{}{t}", self.prefix))
-            .collect();
-
-        // Tokenize all inputs first so we can size the batch precisely.
         let mut tokenized: Vec<Vec<llama_cpp_2::token::LlamaToken>> =
-            Vec::with_capacity(texts.len());
-        for text in &prefixed {
+            Vec::with_capacity(prefixed.len());
+        for text in prefixed {
             let toks = self
                 .model
                 .str_to_token(text, AddBos::Always)
@@ -158,7 +157,6 @@ impl Embedder for LlamaEmbedder {
             tokenized.push(toks);
         }
 
-        // Ensure no single sequence exceeds the context window.
         let n_ctx: usize = self
             .ctx_params
             .n_ctx()
@@ -177,15 +175,14 @@ impl Embedder for LlamaEmbedder {
         let n_seq_max = i32::try_from(tokenized.len())
             .map_err(|_| anyhow!("too many sequences in one batch"))?;
         let mut batch = LlamaBatch::new(total_tokens, n_seq_max);
-
         for (seq_id, toks) in tokenized.iter().enumerate() {
             batch
                 .add_sequence(toks, seq_id as i32, false)
                 .map_err(|e| anyhow!("batch.add_sequence(seq={seq_id}): {e}"))?;
         }
 
-        // LlamaContextParams defaults `n_seq_max` to 1; we need one
-        // sequence slot per text in the batch.
+        // LlamaContextParams defaults n_seq_max to 1; size the slot
+        // count to this batch.
         let ctx_params = self
             .ctx_params
             .clone()
@@ -219,6 +216,27 @@ impl Embedder for LlamaEmbedder {
             out.push(v);
         }
         Ok(out)
+    }
+}
+
+impl Embedder for LlamaEmbedder {
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let prefixed: Vec<String> = texts
+            .iter()
+            .map(|t| format!("{}{t}", self.doc_prefix))
+            .collect();
+        self.embed_prefixed(&prefixed)
+    }
+
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        let prefixed = vec![format!("{}{text}", self.query_prefix)];
+        let mut out = self.embed_prefixed(&prefixed)?;
+        out.pop()
+            .ok_or_else(|| anyhow!("embed_query returned no vector"))
     }
 }
 

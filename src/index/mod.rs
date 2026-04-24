@@ -50,6 +50,33 @@ pub trait Upserter {
     fn delete_points(&self, collection: &str, ids: &[u64]) -> anyhow::Result<()>;
 }
 
+/// One hit back from a kNN search: id + similarity score + the JSON
+/// payload we stored alongside the vector.
+#[derive(Debug, Clone)]
+pub struct RawHit {
+    pub id: u64,
+    /// Similarity score in `[0, 1]`. Higher = closer. sqlite-vec
+    /// returns L2 distance, so we convert via
+    /// `score = 1 / (1 + distance)` for a monotonic, human-readable
+    /// value; cosine ordering is preserved since all vectors are
+    /// L2-normalized before insertion.
+    pub score: f32,
+    pub payload: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// Runs kNN queries against a vector store. Separate from
+/// [`Upserter`] so the query codepath doesn't need the writer's
+/// mutation surface (and vice versa). A single concrete type can
+/// implement both — `SqliteUpserter` does.
+pub trait Searcher {
+    /// Nearest-neighbor search. `top_k` is a soft limit: callers
+    /// typically over-request (e.g. `top_k * 3`) and dedupe
+    /// afterwards, so implementations SHOULD return exactly `top_k`
+    /// rows if that many exist.
+    fn search(&self, collection: &str, vector: &[f32], top_k: usize)
+        -> anyhow::Result<Vec<RawHit>>;
+}
+
 /// Default embedding batch size. Matches the Go version.
 pub const DEFAULT_BATCH_SIZE: usize = 32;
 

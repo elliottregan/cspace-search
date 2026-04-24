@@ -6,7 +6,7 @@
 //! a join. Rowids are the 64-bit [`Point::id`] cast to `i64` — sqlite
 //! stores them natively and the cast is a no-op on the bit pattern.
 
-use super::{Point, Upserter};
+use super::{Point, RawHit, Searcher, Upserter};
 use anyhow::{anyhow, Context};
 use rusqlite::Connection;
 use std::collections::BTreeMap;
@@ -219,6 +219,57 @@ impl Upserter for SqliteUpserter {
         }
         tx.commit().context("commit delete tx")?;
         Ok(())
+    }
+}
+
+impl Searcher for SqliteUpserter {
+    fn search(
+        &self,
+        collection: &str,
+        vector: &[f32],
+        top_k: usize,
+    ) -> anyhow::Result<Vec<RawHit>> {
+        if top_k == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().map_err(|e| anyhow!("sqlite mutex: {e}"))?;
+        let quoted = quote_ident(collection);
+        let sql = format!(
+            "SELECT rowid, distance, payload FROM {quoted} \
+             WHERE embedding MATCH ?1 ORDER BY distance LIMIT ?2"
+        );
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(rusqlite::Error::SqliteFailure(_, Some(ref msg)))
+                if msg.contains("no such table") =>
+            {
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(anyhow::Error::from(e)).context("prepare search"),
+        };
+        let limit = i64::try_from(top_k).unwrap_or(i64::MAX);
+        let q_blob = vec_blob(vector);
+        let rows = stmt.query_map(rusqlite::params![q_blob, limit], |r| {
+            let id: i64 = r.get(0)?;
+            let dist: f64 = r.get(1)?;
+            let payload_json: Option<String> = r.get(2)?;
+            Ok((id as u64, dist as f32, payload_json))
+        })?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, distance, payload_json) = row?;
+            // L2 distance → similarity score on [0, 1]. Monotonic
+            // decreasing in distance; cosine order is preserved since
+            // stored vectors are L2-normalized.
+            let score = 1.0f32 / (1.0 + distance);
+            let payload: BTreeMap<String, serde_json::Value> = match payload_json {
+                Some(s) => serde_json::from_str(&s).unwrap_or_default(),
+                None => BTreeMap::new(),
+            };
+            out.push(RawHit { id, score, payload });
+        }
+        Ok(out)
     }
 }
 

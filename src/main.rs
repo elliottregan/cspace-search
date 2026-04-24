@@ -12,6 +12,7 @@ mod config;
 mod corpus;
 mod embed;
 mod index;
+mod query;
 
 /// cspace-search: local-first semantic search for commits, code, and context.
 #[derive(Parser, Debug)]
