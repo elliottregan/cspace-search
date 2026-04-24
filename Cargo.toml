@@ -38,6 +38,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.10"
 hex = "0.4"
 
+# Glob matching for the code corpus's Filter excludes.
+glob = "0.3"
+
 # Added in later phases:
 # candle-core       — model runtime (Phase: embed)
 # candle-nn         — layers

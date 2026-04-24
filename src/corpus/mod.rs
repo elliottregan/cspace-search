@@ -13,7 +13,12 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+mod chunker;
+mod code;
 mod commits;
+mod filter;
+
+pub use code::CodeCorpus;
 pub use commits::CommitCorpus;
 
 /// One unit of content to be indexed. May represent a whole file, a
