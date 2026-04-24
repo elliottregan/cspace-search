@@ -20,9 +20,15 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
+        # Implies a full typecheck, so we don't need a separate cargo check.
         run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: cargo check
-        run: cargo check --all-targets
+      - name: cargo doc (broken-link check)
+        env:
+          RUSTDOCFLAGS: >-
+            -D rustdoc::broken_intra_doc_links
+            -D rustdoc::private_intra_doc_links
+            -D rustdoc::invalid_html_tags
+        run: cargo doc --no-deps --document-private-items
 
   test:
     runs-on: ${{ matrix.os }}

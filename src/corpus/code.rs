@@ -78,7 +78,7 @@ impl Corpus for CodeCorpus {
     }
 }
 
-/// Prepend a "File: <path>" header so the embedder has path context.
+/// Prepend a `File: <path>` header so the embedder has path context.
 /// Jina v5 benefits from this signal.
 fn format_embed_text(path: &str, body: &str) -> String {
     let header = format!("{EMBED_HEADER_PREFIX}{path}\n\n");
