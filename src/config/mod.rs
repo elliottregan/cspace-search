@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-mod runtime;
+pub mod runtime;
 pub use runtime::resolve_corpus;
 
 /// Embedded default configuration. Must stay in sync with the Go version
