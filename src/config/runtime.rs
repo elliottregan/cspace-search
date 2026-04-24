@@ -12,9 +12,17 @@
 #![allow(dead_code)]
 
 use super::{Config, CorpusConfig};
-use crate::corpus::{self, Corpus};
+use crate::corpus::{Corpus, CorpusRegistry};
 use std::path::Path;
+use std::sync::OnceLock;
 use thiserror::Error;
+
+/// Process-wide registry. Built lazily on first call so tests and
+/// consumers that never touch the factory don't pay the init cost.
+fn default_registry() -> &'static CorpusRegistry {
+    static REG: OnceLock<CorpusRegistry> = OnceLock::new();
+    REG.get_or_init(CorpusRegistry::with_builtins)
+}
 
 #[derive(Debug, Error)]
 pub enum SearchError {
@@ -61,33 +69,30 @@ pub fn build_with_config(
 
 /// Instantiate the named corpus with config-provided knobs.
 ///
-/// Builder dispatch reads `corpora.<id>.type` (falling back to
-/// `"files"` for unknown IDs, since that's the common case). `files`
-/// corpora are fully config-driven; `commits` remains a special case
-/// (it doesn't walk paths). `issues` is deferred until Phase 2b-4.
+/// Dispatch goes through the process-wide `CorpusRegistry`. The type
+/// name comes from `corpora.<id>.type`, falling back to `"commits"`
+/// for the `commits` id (for configs predating the `type` field) and
+/// `"files"` otherwise. Unknown type names surface as `UnknownCorpus`
+/// with the list of registered types for user diagnosis.
 fn build_corpus(id: &str, cfg: &Config) -> Result<Box<dyn Corpus>, SearchError> {
     let cc = cfg.corpora.get(id).cloned().unwrap_or_default();
-    // Legacy id-based fallback for configs that predate the `type`
-    // field: `commits` → commits, everything else → files.
     let ty = match cc.type_name.as_deref() {
         Some(t) => t,
         None if id == "commits" => "commits",
         None => "files",
     };
-    match ty {
-        "files" => {
-            let fc =
-                corpus::FileCorpus::from_config(id, &cc).map_err(|e| SearchError::BuildFailed {
-                    corpus: id.to_string(),
-                    detail: e.to_string(),
-                })?;
-            Ok(Box::new(fc))
-        }
-        "commits" => Ok(Box::new(corpus::CommitCorpus {
-            limit: cc.limit.max(0) as usize,
-        })),
-        other => Err(SearchError::UnknownCorpus {
-            corpus: format!("{id} (type = {other})"),
+    let reg = default_registry();
+    match reg.build(ty, id, &cc) {
+        Some(Ok(corpus)) => Ok(corpus),
+        Some(Err(e)) => Err(SearchError::BuildFailed {
+            corpus: id.to_string(),
+            detail: e.to_string(),
+        }),
+        None => Err(SearchError::UnknownCorpus {
+            corpus: format!(
+                "{id} (type = {ty}; known: {})",
+                reg.known_types().join(", ")
+            ),
         }),
     }
 }
