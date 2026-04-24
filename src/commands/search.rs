@@ -3,6 +3,7 @@ use crate::embed::llama::LlamaEmbedder;
 use crate::embed::{Embedder, FakeEmbedder};
 use crate::index::sqlite::SqliteUpserter;
 use crate::query::{self, RunConfig};
+use crate::util;
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -42,7 +43,7 @@ pub struct Args {
 }
 
 pub fn run(args: Args) -> anyhow::Result<()> {
-    let root = args.root.map(Ok).unwrap_or_else(find_project_root)?;
+    let root = args.root.map(Ok).unwrap_or_else(util::find_project_root)?;
     let cfg = config::load(&root)?;
 
     let runtime = config::runtime::build_with_config(&root, &args.corpus, cfg)?;
@@ -53,7 +54,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         Box::new(LlamaEmbedder::jina_v5_nano_retrieval()?)
     };
 
-    let db_path = index_db_path(&root)?;
+    let db_path = util::index_db_path(&root)?;
     let searcher = SqliteUpserter::open(&db_path)?;
 
     let envelope = query::run(RunConfig {
@@ -85,25 +86,4 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         }
     }
     Ok(())
-}
-
-fn find_project_root() -> anyhow::Result<PathBuf> {
-    let mut cur = std::env::current_dir()?;
-    loop {
-        if cur.join(".git").exists() {
-            return Ok(cur);
-        }
-        if !cur.pop() {
-            break;
-        }
-    }
-    Ok(std::env::current_dir()?)
-}
-
-fn index_db_path(project_root: &std::path::Path) -> anyhow::Result<PathBuf> {
-    let hash = crate::corpus::project_hash(project_root);
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
-    Ok(home.join(".cspace-search").join(format!("{hash}.db")))
 }

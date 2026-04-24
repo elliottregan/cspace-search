@@ -2,6 +2,7 @@ use crate::config;
 use crate::embed::llama::{LlamaEmbedder, DEFAULT_DIM};
 use crate::embed::{Embedder, FakeEmbedder};
 use crate::index::{self, sqlite::SqliteUpserter, RunConfig};
+use crate::util;
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -42,7 +43,7 @@ pub struct Args {
 }
 
 pub fn run(args: Args) -> anyhow::Result<()> {
-    let root = args.root.map(Ok).unwrap_or_else(find_project_root)?;
+    let root = args.root.map(Ok).unwrap_or_else(util::find_project_root)?;
     let cfg = config::load(&root)?;
 
     let corpora: Vec<String> = if args.corpus.iter().any(|c| c == "all") {
@@ -60,7 +61,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let db_path = index_db_path(&root)?;
+    let db_path = util::index_db_path(&root)?;
     let upserter = SqliteUpserter::open(&db_path)?;
     // Boxed to a trait object so both embedders share a codepath below.
     let embedder: Box<dyn Embedder> = if args.fake_embedder {
@@ -113,37 +114,4 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         );
     }
     Ok(())
-}
-
-/// Walk up from `cwd` to find the nearest `.git/` directory, then
-/// return that directory as the project root.
-fn find_project_root() -> anyhow::Result<PathBuf> {
-    let mut cur = std::env::current_dir()?;
-    loop {
-        if cur.join(".git").exists() {
-            return Ok(cur);
-        }
-        if !cur.pop() {
-            break;
-        }
-    }
-    // Fall back to cwd; most callers pass --root explicitly anyway.
-    Ok(std::env::current_dir()?)
-}
-
-/// Index sqlite file path. One per project, keyed by project hash so
-/// distinct clones of the same repo don't collide under
-/// `~/.cspace-search/`.
-fn index_db_path(project_root: &std::path::Path) -> anyhow::Result<PathBuf> {
-    let hash = crate::corpus::project_hash(project_root);
-    let home = dirs_home()?;
-    Ok(home.join(".cspace-search").join(format!("{hash}.db")))
-}
-
-fn dirs_home() -> anyhow::Result<PathBuf> {
-    // std doesn't give us a real cross-platform home dir, but for our
-    // supported platforms (macOS + Linux) $HOME is sufficient.
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME is not set"))
 }
