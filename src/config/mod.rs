@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 mod runtime;
-pub use runtime::{resolve_corpus, SearchError};
+pub use runtime::resolve_corpus;
 
 /// Embedded default configuration. Must stay in sync with the Go version
 /// at `cspace/search/config/default.yaml` until cspace drops the search
@@ -17,9 +17,10 @@ const DEFAULT_YAML: &str = include_str!("default.yaml");
 /// Top-level config shape. Mirrors `search/config/config.go:Config`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Config {
-    /// Master switch for semantic search in this project. Must be set to
-    /// true explicitly in `search.yaml`; otherwise every search CLI + MCP
-    /// + bootstrap path fast-exits with `SearchError::SearchDisabled`.
+    /// Master switch for semantic search in this project. Must be set
+    /// to true explicitly in `search.yaml`; otherwise every search CLI,
+    /// MCP, and bootstrap path fast-exits with an error.
+    ///
     /// Prevents "I just cloned a repo with cspace baked in and now it's
     /// indexing node_modules on first container boot."
     #[serde(default)]
