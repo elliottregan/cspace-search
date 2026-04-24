@@ -39,6 +39,16 @@ impl Corpus for CommitCorpus {
         format!("commits-{}", project_hash(project_root))
     }
 
+    fn kinds(&self) -> Vec<String> {
+        vec!["commit".to_string()]
+    }
+
+    fn supports_paths(&self) -> bool {
+        // `path` on a commit record is the commit SHA, not a file
+        // path — glob filtering and line-range preview don't apply.
+        false
+    }
+
     fn enumerate(&self, project_root: &Path) -> anyhow::Result<Vec<Record>> {
         let limit = if self.limit == 0 {
             DEFAULT_LIMIT

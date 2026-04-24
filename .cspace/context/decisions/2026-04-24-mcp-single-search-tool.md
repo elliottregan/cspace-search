@@ -46,15 +46,32 @@ name-based autocomplete are rare.
 
 ### 2026-04-24 follow-up: corpus advertising
 
-The first concession below ("how does a client discover valid
-corpora?") is now addressed without going back to dynamic tools.
-`ServerHandler::list_tools` is overridden to read the runnable corpus
-set at call time and inject it into the `search` tool's input schema
-as `properties.corpus.enum`, and into the tool description as
-"available corpora: …". Clients that render schema constraints now
-show a dropdown; clients that only render descriptions still see the
-list. The ceremony is ~40 lines in `commands/mcp.rs`, not a
-per-corpus tool synthesis.
+Both original concessions are now addressed without going back to
+dynamic tools. `ServerHandler::list_tools` is overridden to read the
+runnable corpus set at call time and inject per-corpus specialisation
+into the `search` tool:
+
+- `properties.corpus.enum` — valid corpus ids
+- `properties.kind_filter.description` — the kind vocabulary each
+  corpus emits, formatted as `corpus=kind1|kind2; …`
+- Top-level tool description — summarises corpora, their kinds, and
+  which corpora don't support `path_filter` / `include_preview`
+  (commits is the current example — `path` is a SHA, not a file path)
+
+The vocabulary comes from two new trait methods on `Corpus`:
+
+- `kinds() -> Vec<String>` — the kind values this corpus emits,
+  sorted and deduped. `CommitCorpus` returns `["commit"]`;
+  `FileCorpus` unions its path_groups' kinds with the default.
+- `supports_paths() -> bool` — true when the `path` field is a
+  file path (amenable to glob filtering and line-range preview).
+  `CommitCorpus` returns false; `FileCorpus` defaults to true.
+
+Clients that render JSON Schema constraints get an enum dropdown for
+`corpus` and a contextual description for `kind_filter`. Clients that
+only render the tool description see a structured rundown. The
+ceremony is ~80 lines in `commands/mcp.rs` plus two ~10-line trait
+methods, not a per-corpus tool synthesis with its own dispatch.
 
 ## Re-evaluation trigger
 

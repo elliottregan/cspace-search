@@ -263,61 +263,135 @@ impl ServerHandler for SearchServer {
     }
 }
 
+/// Per-corpus metadata the `search` tool's schema needs to specialize
+/// its input: what `kind` values the corpus emits and whether
+/// `path`-based fields (`path_filter`, `include_preview`) apply.
+#[derive(Debug, Clone)]
+struct CorpusInfo {
+    id: String,
+    kinds: Vec<String>,
+    supports_paths: bool,
+}
+
 /// Enumerate the corpora the `search` tool is willing to accept, in
-/// a stable order. Reads the config fresh each call so a config edit
-/// doesn't require a server restart. Returns an empty list on any
-/// config-load error — the tool is still callable; the schema just
-/// falls back to the unconstrained `corpus: string`.
-fn known_corpora(project_root: &std::path::Path) -> Vec<String> {
+/// a stable order. Reads the config + builds each corpus fresh per
+/// call so a config edit doesn't require a server restart. Returns
+/// an empty list on any config-load error — the tool stays callable;
+/// the schema just falls back to the unconstrained defaults.
+fn known_corpora(project_root: &std::path::Path) -> Vec<CorpusInfo> {
     let cfg = match config::load(project_root) {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
     if !cfg.enabled {
-        // Master switch off: no corpus is actually runnable, so
-        // advertising any would be misleading.
         return Vec::new();
     }
-    let mut out: Vec<String> = cfg
+    let mut ids: Vec<String> = cfg
         .corpora
         .iter()
         .filter(|(_, cc)| cc.enabled)
         .map(|(id, _)| id.clone())
         .collect();
-    out.sort();
+    ids.sort();
+
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        // Build the corpus to pull its kind vocabulary. If the build
+        // fails (unknown type, disabled at runtime layer), silently
+        // skip — the tool's schema loses that corpus but `call_tool`
+        // would surface the same error anyway.
+        let Ok(rt) = config::runtime::build_with_config(project_root, &id, cfg.clone()) else {
+            continue;
+        };
+        out.push(CorpusInfo {
+            id: id.clone(),
+            kinds: rt.corpus.kinds(),
+            supports_paths: rt.corpus.supports_paths(),
+        });
+    }
     out
 }
 
-/// Narrow the `corpus` field of the `search` tool's JSON Schema to
-/// the runnable set, so MCP clients render a dropdown of valid
-/// corpora instead of a free-text box. Also embeds the list in the
-/// top-level tool description so clients that don't render schemas
-/// still see which corpora are available.
-fn patch_search_schema(tool: &mut rmcp::model::Tool, corpora: &[String]) {
+/// Narrow the `search` tool's input schema to what the current corpus
+/// set actually supports:
+///   - `corpus` gets an `enum` of the runnable ids.
+///   - `kind_filter` gets a per-corpus vocabulary in its description.
+///   - The tool description embeds a structured per-corpus summary
+///     (kinds + whether path-based fields apply) for clients that
+///     don't render schema constraints.
+fn patch_search_schema(tool: &mut rmcp::model::Tool, corpora: &[CorpusInfo]) {
     if corpora.is_empty() {
         return;
     }
     let enum_values: Vec<serde_json::Value> = corpora
         .iter()
-        .cloned()
-        .map(serde_json::Value::String)
+        .map(|c| serde_json::Value::String(c.id.clone()))
         .collect();
-    let summary = format!("available corpora: {}", corpora.join(", "));
 
-    // Cloning the Arc's inner Map to edit, then swapping the Arc.
-    // This is the only time we pay a small allocation for patching;
-    // every subsequent list_tools call reads from `tool_router` again
-    // and re-patches from scratch, which is negligible.
+    let mut kind_lines: Vec<String> = Vec::new();
+    let mut path_unsupported: Vec<String> = Vec::new();
+    for c in corpora {
+        if !c.kinds.is_empty() {
+            kind_lines.push(format!("{}={}", c.id, c.kinds.join("|")));
+        }
+        if !c.supports_paths {
+            path_unsupported.push(c.id.clone());
+        }
+    }
+    let kinds_summary = if kind_lines.is_empty() {
+        String::new()
+    } else {
+        format!("kind_filter values by corpus: {}", kind_lines.join("; "))
+    };
+    let paths_summary = if path_unsupported.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "path_filter / include_preview do not apply to: {}",
+            path_unsupported.join(", ")
+        )
+    };
+
+    // Clone + mutate the Arc'd schema.
     let mut schema: serde_json::Map<String, serde_json::Value> = (*tool.input_schema).clone();
     if let Some(serde_json::Value::Object(props)) = schema.get_mut("properties") {
         if let Some(serde_json::Value::Object(corpus)) = props.get_mut("corpus") {
             corpus.insert("enum".into(), serde_json::Value::Array(enum_values));
         }
+        if !kinds_summary.is_empty() {
+            if let Some(serde_json::Value::Object(kf)) = props.get_mut("kind_filter") {
+                let existing = kf
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let joined = if existing.is_empty() {
+                    kinds_summary.clone()
+                } else {
+                    format!("{existing} ({kinds_summary})")
+                };
+                kf.insert("description".into(), serde_json::Value::String(joined));
+            }
+        }
     }
     tool.input_schema = std::sync::Arc::new(schema);
 
+    let mut summary_parts: Vec<String> = vec![format!(
+        "available corpora: {}",
+        corpora
+            .iter()
+            .map(|c| c.id.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )];
+    if !kinds_summary.is_empty() {
+        summary_parts.push(kinds_summary);
+    }
+    if !paths_summary.is_empty() {
+        summary_parts.push(paths_summary);
+    }
+    let summary = summary_parts.join("; ");
     let new_desc = match &tool.description {
-        Some(d) => format!("{d} ({summary})"),
+        Some(d) => format!("{d} — {summary}"),
         None => summary,
     };
     tool.description = Some(new_desc.into());
@@ -675,7 +749,19 @@ mod tests {
         )
         .unwrap();
         let list = known_corpora(dir.path());
-        assert_eq!(list, vec!["commits".to_string(), "context".to_string()]);
+        let ids: Vec<&str> = list.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["commits", "context"]);
+
+        let commits = list.iter().find(|c| c.id == "commits").unwrap();
+        assert_eq!(commits.kinds, vec!["commit".to_string()]);
+        assert!(!commits.supports_paths, "commits uses SHAs, not file paths");
+
+        let context = list.iter().find(|c| c.id == "context").unwrap();
+        assert!(context.supports_paths);
+        // Context's default kinds come from its path_groups in the
+        // shipped default config (`context` + `finding`); just sanity
+        // check non-empty. Exact values are covered in file.rs tests.
+        assert!(!context.kinds.is_empty(), "got {:?}", context.kinds);
     }
 
     #[test]
@@ -683,6 +769,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // No search.yaml → master switch off by default.
         assert!(known_corpora(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn patch_search_schema_advertises_kind_vocabulary() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_project(dir.path());
+        let server = build_server(dir.path());
+
+        let tool = server.get_tool("search").expect("search tool present");
+
+        // kind_filter.description should mention the per-corpus
+        // vocabulary. Context emits `context` and `finding`.
+        let schema = serde_json::Value::Object((*tool.input_schema).clone());
+        let kf_desc = schema
+            .pointer("/properties/kind_filter/description")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            kf_desc.contains("context") && kf_desc.contains("finding"),
+            "kind_filter description missing vocab: {kf_desc}"
+        );
+
+        // Tool description summarises the per-corpus story.
+        let desc = tool.description.as_deref().unwrap_or_default();
+        assert!(
+            desc.contains("kind_filter values by corpus"),
+            "top-level description missing kinds block: {desc}"
+        );
+    }
+
+    #[test]
+    fn patch_search_schema_flags_corpora_without_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        // Enable commits so its supports_paths=false is visible.
+        std::fs::write(
+            dir.path().join("search.yaml"),
+            "enabled: true\n\
+             corpora:\n  \
+               context:\n    enabled: true\n  \
+               commits:\n    enabled: true\n",
+        )
+        .unwrap();
+        let server = build_server(dir.path());
+        let tool = server.get_tool("search").expect("search tool present");
+        let desc = tool.description.as_deref().unwrap_or_default();
+        assert!(
+            desc.contains("path_filter / include_preview do not apply to")
+                && desc.contains("commits"),
+            "description should flag commits as path-less: {desc}"
+        );
     }
 
     #[test]

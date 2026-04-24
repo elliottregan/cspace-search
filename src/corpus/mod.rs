@@ -122,6 +122,29 @@ pub trait Corpus: std::fmt::Debug {
     /// indexer batches them anyway. Can swap to a streaming iterator if
     /// a future corpus blows past that assumption.
     fn enumerate(&self, project_root: &Path) -> anyhow::Result<Vec<Record>>;
+
+    /// Kind vocabulary this corpus emits. Used by the MCP layer to
+    /// specialize the `search` tool's schema per corpus: the
+    /// `kind_filter` field advertises the valid values for each
+    /// corpus, so clients can render meaningful dropdowns.
+    ///
+    /// Return value is sorted and deduped. Default is empty — a
+    /// corpus that returns nothing is treated as "kind is opaque
+    /// to callers", and `kind_filter` remains a free-form string.
+    fn kinds(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Does this corpus expose file paths amenable to glob filtering
+    /// (`path_filter`) and to line-range preview (`include_preview`)?
+    /// Corpora where the `path` field is an opaque identifier (e.g.
+    /// a commit hash) should return false. Clients use this hint to
+    /// disable the field; servers still honour the field if set.
+    ///
+    /// Default is true — most corpora are file-backed.
+    fn supports_paths(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

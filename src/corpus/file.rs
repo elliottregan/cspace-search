@@ -157,6 +157,27 @@ impl Corpus for FileCorpus {
         format!("{}-{}", self.id, project_hash(project_root))
     }
 
+    fn kinds(&self) -> Vec<String> {
+        // Union over path_groups' kind overrides, falling back to
+        // the corpus default. Sorted + deduped so the MCP layer can
+        // compare lists byte-for-byte across calls.
+        let mut set: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        let mut any_default = false;
+        for g in &self.path_groups {
+            match &g.kind {
+                Some(k) => {
+                    set.insert(k.clone());
+                }
+                None => any_default = true,
+            }
+        }
+        if any_default {
+            set.insert(self.default_record_kind.clone());
+        }
+        set.into_iter().collect()
+    }
+
     fn enumerate(&self, project_root: &Path) -> Result<Vec<Record>> {
         let candidates = enumerate_candidates(self.source, project_root, &self.filter)?;
 
