@@ -43,6 +43,32 @@ pub struct SqliteUpserter {
     conn: Mutex<Connection>,
 }
 
+/// Snapshot of a collection's on-disk state. Read in one go by
+/// [`SqliteUpserter::collection_stats`] so status reporting doesn't
+/// round-trip twice against the same table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionStats {
+    /// Row count in the vec0 virtual table.
+    pub row_count: u64,
+    /// Unix seconds at which the collection was last written to
+    /// (created OR upserted into OR deleted from). `None` if the
+    /// collection doesn't exist yet.
+    pub last_indexed_at: Option<i64>,
+    /// The fingerprint recorded in `collection_meta`. `None` if the
+    /// collection doesn't exist yet.
+    pub fingerprint: Option<String>,
+    /// Dim recorded in `collection_meta`. `None` when the collection
+    /// hasn't been created.
+    pub dim: Option<usize>,
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 impl SqliteUpserter {
     /// Open (or create) the sqlite file at `path`. Parent directories
     /// are created as needed.
@@ -70,6 +96,61 @@ impl SqliteUpserter {
         Ok(Self {
             path: PathBuf::new(),
             conn: Mutex::new(conn),
+        })
+    }
+
+    /// Where the sqlite file lives on disk. Empty for in-memory
+    /// instances; `search_status` uses this to report file size.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// One-shot read of everything `search_status` needs about a
+    /// collection. Returns defaults for a missing collection (row
+    /// count 0, timestamps/fingerprint `None`) so callers don't have
+    /// to distinguish "not yet indexed" from an error case.
+    pub fn collection_stats(&self, name: &str) -> anyhow::Result<CollectionStats> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("sqlite mutex: {e}"))?;
+
+        let meta: Option<(String, i64, i64)> = conn
+            .query_row(
+                "SELECT fingerprint, dim, updated_at FROM collection_meta WHERE name = ?1",
+                [name],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                // Missing table on a fresh DB: treat as empty, not an error.
+                rusqlite::Error::SqliteFailure(_, Some(ref msg))
+                    if msg.contains("no such table") =>
+                {
+                    Ok(None)
+                }
+                other => Err(other),
+            })
+            .context("read collection_meta for stats")?;
+
+        let quoted = quote_ident(name);
+        let row_count: u64 = match conn.query_row(
+            &format!("SELECT COUNT(*) FROM {quoted}"),
+            [],
+            |r| r.get::<_, i64>(0),
+        ) {
+            Ok(n) => n as u64,
+            Err(rusqlite::Error::SqliteFailure(_, Some(ref msg)))
+                if msg.contains("no such table") =>
+            {
+                0
+            }
+            Err(e) => return Err(anyhow::Error::from(e)).context("count collection rows"),
+        };
+
+        Ok(CollectionStats {
+            row_count,
+            last_indexed_at: meta.as_ref().map(|(_, _, ts)| *ts),
+            fingerprint: meta.as_ref().map(|(fp, _, _)| fp.clone()),
+            dim: meta.as_ref().map(|(_, d, _)| *d as usize),
         })
     }
 }
@@ -106,11 +187,32 @@ impl Upserter for SqliteUpserter {
             "CREATE TABLE IF NOT EXISTS collection_meta (
                 name TEXT PRIMARY KEY,
                 fingerprint TEXT NOT NULL,
-                dim INTEGER NOT NULL
+                dim INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )
         .context("ensure collection_meta table")?;
+
+        // Migrate pre-`updated_at` databases. sqlite's ALTER TABLE ADD
+        // COLUMN errors if the column already exists, so we gate on
+        // pragma_table_info. Pre-1.0 software, but users who've been
+        // running off an earlier build shouldn't have their indices
+        // blown away by a schema change.
+        let has_updated_at: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('collection_meta') WHERE name = 'updated_at'",
+                [],
+                |r| r.get::<_, i64>(0).map(|n| n > 0),
+            )
+            .context("check collection_meta.updated_at column")?;
+        if !has_updated_at {
+            conn.execute(
+                "ALTER TABLE collection_meta ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .context("migrate collection_meta: add updated_at")?;
+        }
 
         let stored: Option<(String, i64)> = conn
             .query_row(
@@ -153,12 +255,17 @@ impl Upserter for SqliteUpserter {
 
         // Record (or refresh) the meta row. On rebuild we want to
         // overwrite the stale fingerprint; on first create we want to
-        // record it. INSERT … ON CONFLICT handles both.
+        // record it. INSERT … ON CONFLICT handles both. `updated_at`
+        // is set on create and on rebuild — callers that only touch
+        // the vec0 table (upsert/delete) bump it separately.
+        let now = now_unix();
         conn.execute(
-            "INSERT INTO collection_meta (name, fingerprint, dim) VALUES (?1, ?2, ?3)
+            "INSERT INTO collection_meta (name, fingerprint, dim, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(name) DO UPDATE SET fingerprint = excluded.fingerprint,
-                                             dim = excluded.dim",
-            rusqlite::params![name, fingerprint, dim as i64],
+                                             dim = excluded.dim,
+                                             updated_at = excluded.updated_at",
+            rusqlite::params![name, fingerprint, dim as i64, now],
         )
         .with_context(|| format!("record collection_meta for {name}"))?;
 
@@ -227,6 +334,17 @@ impl Upserter for SqliteUpserter {
             }
             offset = end;
         }
+        // Stamp the meta row so `search_status` can report a real
+        // `last_indexed_at`. Done once after the full batch so per-
+        // batch fsync cost stays bounded. The meta row MUST exist
+        // (ensure_collection is the only path that creates a
+        // collection); if it doesn't, that's a caller bug worth
+        // surfacing rather than silently recreating the row.
+        conn.execute(
+            "UPDATE collection_meta SET updated_at = ?1 WHERE name = ?2",
+            rusqlite::params![now_unix(), collection],
+        )
+        .with_context(|| format!("stamp collection_meta.updated_at for {collection}"))?;
         Ok(())
     }
 
@@ -273,6 +391,11 @@ impl Upserter for SqliteUpserter {
             }
         }
         tx.commit().context("commit delete tx")?;
+        conn.execute(
+            "UPDATE collection_meta SET updated_at = ?1 WHERE name = ?2",
+            rusqlite::params![now_unix(), collection],
+        )
+        .with_context(|| format!("stamp collection_meta.updated_at for {collection}"))?;
         Ok(())
     }
 }

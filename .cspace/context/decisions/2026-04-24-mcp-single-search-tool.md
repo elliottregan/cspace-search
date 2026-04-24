@@ -44,6 +44,18 @@ Neither is load-bearing for v0.1. Every MCP client we've seen surfaces
 tools as a flat list of callable functions; clients that lean on
 name-based autocomplete are rare.
 
+### 2026-04-24 follow-up: corpus advertising
+
+The first concession below ("how does a client discover valid
+corpora?") is now addressed without going back to dynamic tools.
+`ServerHandler::list_tools` is overridden to read the runnable corpus
+set at call time and inject it into the `search` tool's input schema
+as `properties.corpus.enum`, and into the tool description as
+"available corpora: …". Clients that render schema constraints now
+show a dropdown; clients that only render descriptions still see the
+list. The ceremony is ~40 lines in `commands/mcp.rs`, not a
+per-corpus tool synthesis.
+
 ## Re-evaluation trigger
 
 Flip back to dynamic per-corpus tools if:

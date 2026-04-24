@@ -27,9 +27,31 @@ Building that into `search_status` has two problems:
    many records were embedded vs. skipped — exposing that count at the
    end of each run is a better API than recomputing it on demand.
 
+## What we DO surface (2026-04-24 follow-up)
+
+`search_status` per corpus returns:
+
+- `row_count` — vectors currently stored
+- `last_indexed_at` — unix seconds of the most recent write (create,
+  upsert, or delete) to the collection
+- `fingerprint_matches` — true when the stored fingerprint matches
+  what the currently-loaded embedder would produce; false means a
+  re-`init` would drop and rebuild the vectors (model swap detected)
+- `stored_fingerprint` — the fingerprint that produced the existing
+  vectors, for debugging mismatches
+
+Plus top-level `index.db_size_bytes` and `index.db_path`.
+
+Clients that want a heuristic "is the index stale?" can combine
+`fingerprint_matches` (authoritative — false means definitely stale)
+with `last_indexed_at` recency against whatever change signal they
+track (e.g. git HEAD, file mtimes). The point is: we give enough
+shards for a sensible client heuristic without making `status` do
+O(corpus) work.
+
 ## What consumers should do instead
 
-Callers that want stale signal:
+Callers that want authoritative stale signal:
 
 1. Run `cspace-search init` (it's fast on a warm index — hash-skip
    means only truly changed records get re-embedded).

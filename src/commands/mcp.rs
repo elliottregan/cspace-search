@@ -27,15 +27,21 @@ use crate::embed::cache::{CachedEmbedder, EmbedCache};
 use crate::embed::llama::LlamaEmbedder;
 use crate::embed::{Embedder, FakeEmbedder};
 use crate::index::sqlite::SqliteUpserter;
-use crate::index::Upserter;
 use crate::query::{self, Hit};
 use crate::util;
 use clap::Parser;
 use rmcp::{
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, Content, ServerCapabilities, ServerInfo},
-    service::ServiceExt,
-    tool, tool_handler, tool_router, ErrorData, ServerHandler,
+    handler::server::{
+        router::tool::ToolRouter,
+        tool::ToolCallContext,
+        wrapper::Parameters,
+    },
+    model::{
+        CallToolRequestParams, CallToolResult, Content, ListToolsResult,
+        PaginatedRequestParams, ServerCapabilities, ServerInfo,
+    },
+    service::{RequestContext, RoleServer, ServiceExt},
+    tool, tool_router, ErrorData, ServerHandler,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -201,7 +207,10 @@ impl SearchServer {
     }
 }
 
-#[tool_handler]
+// Hand-rolled `ServerHandler` (not `#[tool_handler]`) so `list_tools`
+// can inject the current corpus set into the `search` tool's schema.
+// `call_tool` still delegates to the macro-generated `tool_router`,
+// so the actual call dispatch path is unchanged.
 impl ServerHandler for SearchServer {
     fn get_info(&self) -> ServerInfo {
         // ServerInfo is #[non_exhaustive]; mutate a default rather
@@ -216,6 +225,102 @@ impl ServerHandler for SearchServer {
         );
         info
     }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        let mut tools = self.tool_router.list_all();
+        let corpora = known_corpora(&self.project_root);
+        for tool in &mut tools {
+            if tool.name == "search" {
+                patch_search_schema(tool, &corpora);
+            }
+        }
+        Ok(ListToolsResult::with_all_items(tools))
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let tcc = ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
+
+    fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
+        let tool = self.tool_router.get(name)?.clone();
+        if name == "search" {
+            let corpora = known_corpora(&self.project_root);
+            let mut patched = tool;
+            patch_search_schema(&mut patched, &corpora);
+            Some(patched)
+        } else {
+            Some(tool)
+        }
+    }
+}
+
+/// Enumerate the corpora the `search` tool is willing to accept, in
+/// a stable order. Reads the config fresh each call so a config edit
+/// doesn't require a server restart. Returns an empty list on any
+/// config-load error — the tool is still callable; the schema just
+/// falls back to the unconstrained `corpus: string`.
+fn known_corpora(project_root: &std::path::Path) -> Vec<String> {
+    let cfg = match config::load(project_root) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    if !cfg.enabled {
+        // Master switch off: no corpus is actually runnable, so
+        // advertising any would be misleading.
+        return Vec::new();
+    }
+    let mut out: Vec<String> = cfg
+        .corpora
+        .iter()
+        .filter(|(_, cc)| cc.enabled)
+        .map(|(id, _)| id.clone())
+        .collect();
+    out.sort();
+    out
+}
+
+/// Narrow the `corpus` field of the `search` tool's JSON Schema to
+/// the runnable set, so MCP clients render a dropdown of valid
+/// corpora instead of a free-text box. Also embeds the list in the
+/// top-level tool description so clients that don't render schemas
+/// still see which corpora are available.
+fn patch_search_schema(tool: &mut rmcp::model::Tool, corpora: &[String]) {
+    if corpora.is_empty() {
+        return;
+    }
+    let enum_values: Vec<serde_json::Value> = corpora
+        .iter()
+        .cloned()
+        .map(serde_json::Value::String)
+        .collect();
+    let summary = format!("available corpora: {}", corpora.join(", "));
+
+    // Cloning the Arc's inner Map to edit, then swapping the Arc.
+    // This is the only time we pay a small allocation for patching;
+    // every subsequent list_tools call reads from `tool_router` again
+    // and re-patches from scratch, which is negligible.
+    let mut schema: serde_json::Map<String, serde_json::Value> = (*tool.input_schema).clone();
+    if let Some(serde_json::Value::Object(props)) = schema.get_mut("properties") {
+        if let Some(serde_json::Value::Object(corpus)) = props.get_mut("corpus") {
+            corpus.insert("enum".into(), serde_json::Value::Array(enum_values));
+        }
+    }
+    tool.input_schema = std::sync::Arc::new(schema);
+
+    let new_desc = match &tool.description {
+        Some(d) => format!("{d} ({summary})"),
+        None => summary,
+    };
+    tool.description = Some(new_desc.into());
 }
 
 impl SearchServer {
@@ -301,28 +406,44 @@ impl SearchServer {
             } else {
                 None
             };
-            // `indexed` == there's at least one row in the collection.
-            // A missing collection reads as zero rows (the store maps
-            // "no such table" to empty).
-            let indexed = match &collection {
-                Some(name) => self
-                    .store
-                    .as_ref()
-                    .existing_points(name)
-                    .map(|m| !m.is_empty())
-                    .unwrap_or(false),
-                None => false,
+            let stats = match collection.as_ref() {
+                Some(name) => self.store.as_ref().collection_stats(name).ok(),
+                None => None,
             };
+            let row_count = stats.as_ref().map(|s| s.row_count).unwrap_or(0);
+            let last_indexed_at = stats
+                .as_ref()
+                .and_then(|s| s.last_indexed_at)
+                .filter(|ts| *ts > 0);
+            let stored_fingerprint = stats.as_ref().and_then(|s| s.fingerprint.clone());
+            // Fingerprint match is a real "not stale in the model
+            // sense" signal: if the stored fingerprint differs from
+            // what the current embedder would produce, a re-run of
+            // `init` would drop and rebuild this collection.
+            let fingerprint_matches = stored_fingerprint
+                .as_ref()
+                .map(|fp| fp == &embedder_fp);
             corpora.insert(
                 id.clone(),
                 serde_json::json!({
                     "enabled": cc.enabled,
                     "runnable": runnable,
-                    "indexed": indexed,
+                    "indexed": row_count > 0,
                     "collection": collection,
+                    "row_count": row_count,
+                    "last_indexed_at": last_indexed_at,
+                    "fingerprint_matches": fingerprint_matches,
+                    "stored_fingerprint": stored_fingerprint,
                 }),
             );
         }
+
+        // File size is a cheap signal for "is this a fresh vs
+        // long-running install". Missing file (never indexed) reads
+        // as 0; in-memory stores report 0 too.
+        let db_size_bytes = std::fs::metadata(self.store.as_ref().path())
+            .map(|m| m.len())
+            .unwrap_or(0);
 
         Ok(serde_json::json!({
             "root": self.project_root.display().to_string(),
@@ -331,12 +452,17 @@ impl SearchServer {
                 "dim": embedder_dim,
                 "fingerprint": embedder_fp,
             },
+            "index": {
+                "db_size_bytes": db_size_bytes,
+                "db_path": self.store.as_ref().path().display().to_string(),
+            },
             "corpora": corpora,
-            // Staleness detection is not implemented in v0.1: we don't
-            // re-enumerate corpora at status time (would defeat the
-            // "fast, read-only" nature of the tool). Consumers that
-            // want stale signal should run `init` and compare the
-            // `embedded`/`orphans_deleted` counts.
+            // Full staleness detection (re-enumerate the corpus and
+            // compare hashes) is still deferred — it would make a
+            // status call O(corpus). What we DO surface per corpus:
+            // `fingerprint_matches` (model swap detector) and
+            // `last_indexed_at` (for recency heuristics). Consumers
+            // wanting authoritative stale signal should run `init`.
             "stale": serde_json::Value::Null,
         }))
     }
@@ -517,6 +643,72 @@ mod tests {
         );
         // Deferred per docs; must be explicitly null, not absent.
         assert!(status["stale"].is_null());
+    }
+
+    #[test]
+    fn do_status_reports_row_count_and_last_indexed_at() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_project(dir.path());
+        let server = build_server(dir.path());
+
+        let status = server.do_status().unwrap();
+        let ctx = &status["corpora"]["context"];
+        // Three seeded files → three indexed records.
+        assert_eq!(ctx["row_count"], serde_json::json!(3));
+        let last = ctx["last_indexed_at"].as_i64().unwrap_or_default();
+        assert!(last > 0, "last_indexed_at should be a recent unix ts, got {last}");
+        assert_eq!(ctx["fingerprint_matches"], serde_json::Value::Bool(true));
+        // index.db_path/size are present and sensible.
+        assert!(status["index"]["db_size_bytes"].is_number());
+    }
+
+    #[test]
+    fn known_corpora_lists_enabled_corpora_in_sorted_order() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("search.yaml"),
+            "enabled: true\n\
+             corpora:\n  \
+               context:\n    enabled: true\n  \
+               commits:\n    enabled: true\n  \
+               code:\n    enabled: false\n",
+        )
+        .unwrap();
+        let list = known_corpora(dir.path());
+        assert_eq!(list, vec!["commits".to_string(), "context".to_string()]);
+    }
+
+    #[test]
+    fn known_corpora_empty_when_master_switch_off() {
+        let dir = tempfile::tempdir().unwrap();
+        // No search.yaml → master switch off by default.
+        assert!(known_corpora(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn patch_search_schema_injects_enum_on_corpus_field() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_project(dir.path());
+        let server = build_server(dir.path());
+
+        // Drive the ServerHandler path directly: `get_tool("search")`
+        // returns the patched schema without spinning up a transport.
+        let tool = server.get_tool("search").expect("search tool present");
+        let schema = serde_json::Value::Object((*tool.input_schema).clone());
+        let enum_vals = schema
+            .pointer("/properties/corpus/enum")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let vals: Vec<String> = enum_vals
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        assert!(vals.contains(&"context".to_string()), "got {vals:?}");
+
+        // Description should advertise the same set.
+        let desc = tool.description.as_deref().unwrap_or_default();
+        assert!(desc.contains("available corpora"), "got {desc:?}");
     }
 
     #[test]
