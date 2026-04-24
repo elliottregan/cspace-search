@@ -25,10 +25,7 @@ pub struct Args {
 }
 
 pub fn run(args: Args) -> anyhow::Result<()> {
-    let root = args
-        .root
-        .map(Ok)
-        .unwrap_or_else(std::env::current_dir)?;
+    let root = args.root.map(Ok).unwrap_or_else(std::env::current_dir)?;
     let cfg = config::load(&root)?;
 
     if let Some(ref id) = args.corpus {
