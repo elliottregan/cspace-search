@@ -48,16 +48,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 sqlite-vec = "0.1"
 zerocopy = "0.7"
 
-# Embedding inference. ort loads ONNX models; tokenizers handles the
-# BERT-family tokenization Jina v5 needs; hf-hub downloads + caches
-# the model on first use; ndarray is ort's tensor substrate.
-# download-binaries pulls a prebuilt ONNX Runtime at build time so
-# users don't need a system install.
-ort = { version = "2.0.0-rc.10", features = ["ndarray", "download-binaries"] }
-tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
-hf-hub = { version = "0.5", default-features = false, features = ["ureq"] }
-ndarray = "0.16"
-
 # Added in later phases:
 # candle-core       — model runtime (Phase: embed)
 # candle-nn         — layers

@@ -9,8 +9,6 @@
 
 #![allow(dead_code)]
 
-pub mod ort;
-
 use sha2::{Digest, Sha256};
 
 /// Embedder embeds texts in batches and returns unit vectors.
