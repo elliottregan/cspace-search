@@ -16,3 +16,8 @@ Cargo.lock.backup
 *.gguf
 *.safetensors
 *.onnx
+
+# VitePress docs site
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
