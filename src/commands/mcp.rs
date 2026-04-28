@@ -115,7 +115,8 @@ async fn run_async(args: Args) -> anyhow::Result<()> {
 }
 
 /// Arguments for the `search` tool. A required `corpus` selects which
-/// collection to query; the rest are shaping knobs.
+/// collection to query; the rest are shaping knobs that operate
+/// purely on the .db's payload (no filesystem access).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchArgs {
     /// Which indexed corpus to search (e.g. "code", "commits", "context").
@@ -133,10 +134,6 @@ pub struct SearchArgs {
     /// Hits whose `kind` isn't in the list are dropped post-search.
     #[serde(default)]
     pub kind_filter: Option<String>,
-    /// When true, read the file and slice `line_start..=line_end` into
-    /// each hit's `preview` field. Costs one file read per hit.
-    #[serde(default)]
-    pub include_preview: bool,
 }
 
 /// Arguments for `search_status`. No inputs.
@@ -265,7 +262,9 @@ impl ServerHandler for SearchServer {
 
 /// Per-corpus metadata the `search` tool's schema needs to specialize
 /// its input: what `kind` values the corpus emits and whether
-/// `path`-based fields (`path_filter`, `include_preview`) apply.
+/// path-based filtering (`path_filter`) applies (i.e. whether the
+/// corpus's `path` field is a real file path vs. an opaque id like a
+/// commit SHA).
 #[derive(Debug, Clone)]
 struct CorpusInfo {
     id: String,
@@ -347,7 +346,7 @@ fn patch_search_schema(tool: &mut rmcp::model::Tool, corpora: &[CorpusInfo]) {
         String::new()
     } else {
         format!(
-            "path_filter / include_preview do not apply to: {}",
+            "path_filter does not apply to: {}",
             path_unsupported.join(", ")
         )
     };
@@ -451,11 +450,6 @@ impl SearchServer {
             })
             .collect();
 
-        if args.include_preview {
-            for h in &mut out {
-                h.preview = build_preview(&self.project_root, h);
-            }
-        }
         out.truncate(requested_limit.clamp(1, query::MAX_TOP_K));
         Ok(out)
     }
@@ -542,27 +536,6 @@ impl SearchServer {
     }
 }
 
-/// Slice `line_start..=line_end` out of the file at `project_root/path`
-/// and return it. Returns an empty string on any failure — preview is
-/// best-effort, a bad read should never fail the whole tool call.
-fn build_preview(project_root: &std::path::Path, h: &Hit) -> String {
-    if h.path.is_empty() || h.line_start == 0 {
-        return String::new();
-    }
-    let path = project_root.join(&h.path);
-    let body = match std::fs::read_to_string(&path) {
-        Ok(b) => b,
-        Err(_) => return String::new(),
-    };
-    let lines: Vec<&str> = body.lines().collect();
-    let start = (h.line_start as usize).saturating_sub(1);
-    let end = (h.line_end as usize).min(lines.len());
-    if start >= lines.len() || start >= end {
-        return String::new();
-    }
-    lines[start..end].join("\n")
-}
-
 /// Thin wrapper so glob's `PatternError` gets attached context.
 trait PatternErrorExt<T> {
     fn with_context_glob(self, pat: &str) -> anyhow::Result<T>;
@@ -638,7 +611,6 @@ mod tests {
                 limit: Some(3),
                 path_filter: None,
                 kind_filter: None,
-                include_preview: false,
             })
             .unwrap();
 
@@ -661,7 +633,6 @@ mod tests {
                 limit: Some(10),
                 path_filter: None,
                 kind_filter: Some("finding".into()),
-                include_preview: false,
             })
             .unwrap();
 
@@ -683,7 +654,6 @@ mod tests {
                 limit: Some(10),
                 path_filter: Some(".cspace/context/findings/**".into()),
                 kind_filter: None,
-                include_preview: false,
             })
             .unwrap();
 
@@ -815,7 +785,7 @@ mod tests {
         let tool = server.get_tool("search").expect("search tool present");
         let desc = tool.description.as_deref().unwrap_or_default();
         assert!(
-            desc.contains("path_filter / include_preview do not apply to")
+            desc.contains("path_filter does not apply to")
                 && desc.contains("commits"),
             "description should flag commits as path-less: {desc}"
         );

@@ -32,8 +32,6 @@ pub struct Hit {
     pub kind: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub content_hash: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub preview: String,
     #[serde(skip_serializing_if = "is_default_cluster")]
     pub cluster_id: i64,
     /// Corpus-specific payload fields we don't hoist into typed
@@ -149,7 +147,6 @@ fn hit_from_raw(r: crate::index::RawHit) -> Hit {
         score: r.score,
         kind: String::new(),
         content_hash: String::new(),
-        preview: String::new(),
         cluster_id: 0,
         extra: BTreeMap::new(),
     };
@@ -206,7 +203,6 @@ mod tests {
             score,
             kind: String::new(),
             content_hash: String::new(),
-            preview: String::new(),
             cluster_id: 0,
             extra: BTreeMap::new(),
         }

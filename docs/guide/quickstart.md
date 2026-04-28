@@ -58,9 +58,10 @@ This is a stdio JSON-RPC server speaking the
 two tools:
 
 - **`search`** — kNN over a named corpus, with `limit`, `path_filter`,
-  `kind_filter`, and `include_preview` shaping. The tool's input schema
-  advertises the runnable corpus set as an enum, and the per-corpus
-  `kind` vocabulary in the `kind_filter` description.
+  and `kind_filter` shaping. All filters operate on the indexed
+  payload — no filesystem access at query time. The tool's input
+  schema advertises the runnable corpus set as an enum, and the
+  per-corpus `kind` vocabulary in the `kind_filter` description.
 - **`search_status`** — per-corpus row counts, last-indexed timestamps,
   fingerprint match state, and overall db size. Use this to detect
   when a re-index would help.
