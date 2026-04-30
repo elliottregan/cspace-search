@@ -1,6 +1,6 @@
 [package]
 name = "cspace-search"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Local-first semantic search for commits, code, and project context."
 repository = "https://github.com/elliottregan/cspace-search"

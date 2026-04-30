@@ -29,12 +29,13 @@ jobs:
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             asset: cspace-search-linux-arm64
-          - os: macos-13
-            target: x86_64-apple-darwin
-            asset: cspace-search-darwin-amd64
           - os: macos-14
             target: aarch64-apple-darwin
             asset: cspace-search-darwin-arm64
+          # x86_64-apple-darwin (Intel Mac) intentionally omitted:
+          # macos-13 runners are queued indefinitely on free tiers and
+          # Apple Silicon covers the vast majority of Mac users now.
+          # Add it back if there's demand.
 
     steps:
       - uses: actions/checkout@v4
